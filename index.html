@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%231f2a37%22/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <a class="skip" href="#main" onclick="event.preventDefault();document.getElementById('main').focus();">Skip to calculator</a>
@@ -62,55 +62,53 @@
         </fieldset>
 
         <div class="field">
-          <div class="field-head">
-            <label for="price">Price per unit <span class="ccy" data-ccy></span></label>
-            <button type="button" class="link-btn" id="price-reset" data-testid="button-price-reset">Reset to last</button>
+          <label for="cash" id="cash-label">Cash available to invest</label>
+          <div class="cash-row">
+            <input id="cash" class="num" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" data-testid="input-cash">
+            <div class="ccy-toggle" role="group" aria-label="Cash currency">
+              <button type="button" data-cash="CAD" aria-pressed="true" data-testid="button-cash-cad">CAD</button>
+              <button type="button" data-cash="USD" aria-pressed="false" data-testid="button-cash-usd">USD</button>
+            </div>
           </div>
-          <input id="price" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-price">
-          <input id="price-range" type="range" aria-label="Adjust price" data-testid="slider-price">
-          <p class="hint" id="price-hint"></p>
+          <p class="hint" id="cash-hint" hidden></p>
+        </div>
+
+        <div class="two fx-box" id="fx-inputs" hidden>
+          <div class="field">
+            <label for="fxmid">USD→CAD rate</label>
+            <input id="fxmid" class="num" type="number" inputmode="decimal" min="0" step="0.0001" data-testid="input-fx-rate">
+          </div>
+          <div class="field">
+            <label for="spread">Conversion spread %</label>
+            <input id="spread" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-fx-spread">
+          </div>
+          <p class="hint span2">Rate entered manually. The 2.25% spread default comes from a third-party review of CIBC Investor's Edge; check it against your broker's pricing page.</p>
         </div>
 
         <div class="field">
-          <label for="cash"><span id="cash-label">Cash available to invest</span> <span class="ccy" id="cash-ccy"></span></label>
-          <input id="cash" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-cash">
-          <p class="hint" id="cash-hint"></p>
+          <div class="field-head">
+            <label for="price">Price per unit <span class="ccy" data-ccy></span></label>
+            <button type="button" class="link-btn" id="price-reset" hidden data-testid="button-price-reset">Reset to last</button>
+          </div>
+          <input id="price" class="num" type="number" inputmode="decimal" min="0" step="0.01" placeholder="0.00" data-testid="input-price">
+          <input id="price-range" type="range" aria-label="Adjust price" data-testid="slider-price">
+          <p class="hint" id="price-hint"></p>
         </div>
-
-        <fieldset class="group" id="fx-group">
-          <legend id="fx-legend">Pay with</legend>
-          <div class="radio-row">
-            <label class="radio"><input type="radio" name="payfrom" value="trade" checked data-testid="radio-pay-same"> <span id="pay-same-label">CAD cash</span></label>
-            <label class="radio"><input type="radio" name="payfrom" value="convert" data-testid="radio-pay-convert"> <span id="pay-convert-label">USD cash (convert)</span></label>
-          </div>
-          <div class="two" id="fx-inputs" hidden>
-            <div class="field">
-              <label for="fxmid">USD→CAD rate</label>
-              <input id="fxmid" class="num" type="number" inputmode="decimal" min="0" step="0.0001" data-testid="input-fx-rate">
-            </div>
-            <div class="field">
-              <label for="spread">Conversion spread %</label>
-              <input id="spread" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-fx-spread">
-            </div>
-            <p class="hint span2">Rate entered manually. The 2.25% spread default comes from a third-party review of CIBC Investor's Edge; check it against your broker's pricing page.</p>
-          </div>
-        </fieldset>
 
         <div class="field">
           <div class="field-head">
             <label for="qty" id="qty-label">Quantity to buy</label>
             <button type="button" class="link-btn" id="qty-max" data-testid="button-qty-max">Use maximum</button>
           </div>
-          <input id="qty" class="num" type="number" inputmode="decimal" min="0" step="1" data-testid="input-quantity">
-          <input id="qty-range" type="range" min="0" step="1" aria-label="Adjust quantity" data-testid="slider-quantity">
           <label class="check"><input type="checkbox" id="fractional" data-testid="checkbox-fractional"> Allow fractional units</label>
+          <input id="qty" class="num" type="number" inputmode="decimal" min="0" step="1" placeholder="0" data-testid="input-quantity">
+          <input id="qty-range" type="range" min="0" step="1" aria-label="Adjust quantity" data-testid="slider-quantity">
         </div>
 
         <div class="field" id="avgcost-field" hidden>
           <label for="avgcost">Your average cost per unit <span class="opt">(optional, including buy fees)</span></label>
           <input id="avgcost" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-avg-cost">
         </div>
-
 
         <fieldset class="group">
           <legend>Trading fee per trade</legend>
@@ -129,28 +127,6 @@
             </div>
           </div>
           <p class="hint" id="tax-hint"></p>
-        </fieldset>
-
-        <fieldset class="group">
-          <legend>Trade details</legend>
-          <div class="two">
-            <div class="field">
-              <label for="account">Account</label>
-              <select id="account" data-testid="select-account">
-                <option selected>RRSP</option><option>TFSA</option><option>Non-registered</option>
-              </select>
-            </div>
-            <div class="field">
-              <label for="ordertype">Order type</label>
-              <select id="ordertype" data-testid="select-order-type">
-                <option value="limit">Limit</option><option value="market">Market</option>
-              </select>
-            </div>
-            <div class="field span2">
-              <label for="tradetime">Date and time</label>
-              <input id="tradetime" type="datetime-local" data-testid="input-trade-time">
-            </div>
-          </div>
         </fieldset>
       </section>
 
@@ -211,15 +187,36 @@
           </div>
         </section>
 
-        <div class="record">
-          <button type="button" class="btn-primary" disabled aria-describedby="record-note" data-testid="button-record-trade">Record executed trade</button>
-          <p class="hint" id="record-note">Sign-in required. Saving confirmed trades is not switched on yet.</p>
-        </div>
+        <section class="panel" aria-labelledby="h-record">
+          <h2 id="h-record" class="panel-title">Record trade</h2>
+          <div class="three record-fields">
+            <div class="field">
+              <label for="account">Account</label>
+              <select id="account" data-testid="select-account">
+                <option selected>RRSP</option><option>TFSA</option><option>Non-registered</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ordertype">Order type</label>
+              <select id="ordertype" data-testid="select-order-type">
+                <option value="limit">Limit</option><option value="market">Market</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="tradetime">Date and time</label>
+              <input id="tradetime" type="datetime-local" data-testid="input-trade-time">
+            </div>
+          </div>
+          <div class="record">
+            <button type="button" class="btn-primary" disabled aria-describedby="record-note" data-testid="button-record-trade">Record executed trade</button>
+            <p class="hint" id="record-note">Sign-in required. Saving confirmed trades is not switched on yet.</p>
+          </div>
+        </section>
       </section>
     </div>
   </main>
 
-  <script src="securities.js?v=3"></script>
-  <script src="app.js?v=3"></script>
+  <script src="securities.js?v=5"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>

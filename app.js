@@ -87,12 +87,12 @@
     refPrice: null,
     priceSource: '',
     priceStatus: '',
-    cash: DEFAULTS.cash,
-    qty: DEFAULTS.qty,
+    cash: null,
+    cashCcy: 'CAD',
+    qty: null,
     fractional: false,
     commission: DEFAULTS.commission,
     taxPct: 13,
-    convert: false,
     fxMid: DEFAULTS.fxMid,
     spreadPct: DEFAULTS.spreadPct,
     avgCost: null,
@@ -111,7 +111,6 @@
     state.priceSource = q ? q.source : (sec.note || 'No price available');
     state.priceStatus = q ? q.status : '';
     state.taxPct = DEFAULTS.taxByCurrency[sec.currency];
-    state.convert = false;
     state.avgCost = null;
     state.targetMode = 'price';
     state.targetPrice = state.price ? r2(state.price * 1.1) : null;
@@ -122,7 +121,6 @@
     setVal('avgcost', null);
     setVal('tprice', state.targetPrice);
     setVal('uprice', state.uprice);
-    document.querySelector('input[name="payfrom"][value="trade"]').checked = true;
     render();
   }
 
@@ -136,13 +134,13 @@
   function compute() {
     const s = state;
     const sec = s.sec;
-    const ccy = sec.currency;
+    const ccy = sec ? sec.currency : s.cashCcy;
     const P = s.price;
     const C = s.commission ?? 0;
     const tax = r2(C * (s.taxPct ?? 0) / 100);
     const fee = r2(C + tax);
-    const convert = !!s.convert;
-    const cashCcy = convert ? (ccy === 'USD' ? 'CAD' : 'USD') : ccy;
+    const cashCcy = s.cashCcy;
+    const convert = !!sec && cashCcy !== ccy;
     const mid = s.fxMid || 0;
     const sp = (s.spreadPct || 0) / 100;
     // Effective USD→CAD rate after the spread. Buying USD costs more CAD (mid × (1 + spread));
@@ -151,7 +149,8 @@
     const effRate = sellingUsd ? mid * (1 - sp) : mid * (1 + sp);
     // f = units of cash currency per unit of trade currency
     const f = !convert || effRate <= 0 ? 1 : (ccy === 'USD' ? effRate : 1 / effRate);
-    const out = { ccy, cashCcy, convert, tax, fee, effRate, sellingUsd, f, valid: P > 0 && (!convert || effRate > 0) };
+    const reason = !sec ? 'sec' : !(P > 0) ? 'price' : (convert && !(effRate > 0)) ? 'rate' : null;
+    const out = { ccy, cashCcy, convert, tax, fee, effRate, sellingUsd, f, valid: !reason, reason, hasCash: s.cash > 0, hasQty: s.qty > 0 };
     if (!out.valid) return out;
 
     const Q = s.qty ?? 0;
@@ -217,18 +216,28 @@
   function render() {
     const s = state;
     const sec = s.sec;
-    const ccy = sec.currency;
     const isBuy = s.side === 'buy';
     const r = compute();
+    const ccy = r.ccy;
 
     // Selected security strip
-    $('s-symbol').textContent = sec.symbol;
-    $('s-name').textContent = sec.name;
-    $('s-name').href = sec.website;
-    $('s-meta').textContent = `${sec.type} · ${sec.exchange} · ${ccy}`;
-    $('s-last').textContent = sec.last != null ? price(sec.last, ccy) : '—';
-    $('s-chg').innerHTML = sec.last != null ? changeHtml(sec) : '';
-    $('s-source').innerHTML = sec.last != null ? '<span class="badge">Not live</span>' : esc(sec.note || '');
+    if (sec) {
+      $('s-symbol').textContent = sec.symbol;
+      $('s-name').textContent = sec.name;
+      $('s-name').href = sec.website;
+      $('s-name').hidden = false;
+      $('s-meta').textContent = `${sec.type} · ${sec.exchange} · ${ccy}`;
+      $('s-last').textContent = sec.last != null ? price(sec.last, ccy) : '—';
+      $('s-chg').innerHTML = sec.last != null ? changeHtml(sec) : '';
+      $('s-source').innerHTML = sec.last != null ? '<span class="badge">Not live</span>' : esc(sec.note || '');
+    } else {
+      $('s-symbol').textContent = 'No security selected';
+      $('s-name').hidden = true;
+      $('s-meta').innerHTML = '<span class="sec-empty">Search above to choose a security.</span>';
+      $('s-last').textContent = '';
+      $('s-chg').innerHTML = '';
+      $('s-source').innerHTML = '';
+    }
 
     document.querySelectorAll('[data-ccy]').forEach((el) => { el.textContent = `(${ccy})`; });
 
@@ -248,14 +257,14 @@
     if (s.price != null) pr.value = s.price;
     pr.disabled = s.price == null && s.refPrice == null;
     $('price-reset').hidden = s.refPrice == null || s.price === s.refPrice;
-    $('price').setAttribute('aria-invalid', String(!(s.price > 0)));
+    $('price').setAttribute('aria-invalid', String(!!sec && !(s.price > 0)));
     const statusBadge = s.priceStatus ? `<span class="badge">${esc(s.priceStatus)}</span>` : '';
-    $('price-hint').innerHTML = s.price > 0
-      ? `${esc(s.priceSource)}${statusBadge}`
+    $('price-hint').innerHTML = !sec ? 'Choose a security to fill this in.'
+      : s.price > 0 ? `${esc(s.priceSource)}${statusBadge}`
       : `<span class="warn">Enter a price to calculate.</span> ${esc(sec.note || '')}`;
 
     // Cash, quantity labels
-    $('cash-label').textContent = isBuy ? 'Cash available to invest' : 'Cash you want to raise';
+    $('cash-label').textContent = isBuy ? 'Cash available to invest' : 'Cash you want to raise (receive proceeds in)';
     $('qty-label').textContent = isBuy ? 'Quantity to buy' : 'Quantity to sell';
     $('qty-max').hidden = !isBuy;
     $('avgcost-field').hidden = isBuy;
@@ -268,21 +277,17 @@
     qr.max = String(Math.max(10, Math.ceil(maxU * 1.5), Math.ceil((s.qty || 0) * (isBuy ? 1 : 2))));
     qr.value = String(s.qty || 0);
 
-    // FX group
-    const other = ccy === 'USD' ? 'CAD' : 'USD';
-    $('fx-legend').textContent = isBuy ? 'Pay with' : 'Receive proceeds as';
-    $('pay-same-label').textContent = isBuy ? `${ccy} cash` : ccy;
-    $('pay-convert-label').textContent = isBuy ? `${other} cash (convert)` : `${other} (convert)`;
-    $('fx-inputs').hidden = !s.convert;
-    $('cash-ccy').textContent = `(${r.cashCcy})`;
+    // Cash currency
+    document.querySelectorAll('.ccy-toggle button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cash === s.cashCcy)));
+    $('fx-inputs').hidden = !r.convert;
 
     // Cash hint
     let ch = '';
     if (r.convert && r.effRate > 0) {
       const rateTxt = `1 USD = ${group(r.effRate, 4, 4)} CAD (rate ${r.sellingUsd ? '−' : '+'} spread)`;
       ch = isBuy
-        ? `Converted at ${rateTxt}: about ${money(r2((s.cash || 0) / r.f), ccy)} to spend.`
-        : `Proceeds converted at ${rateTxt}.`;
+        ? `${sec.symbol} trades in ${ccy}. Your ${s.cashCcy} is converted at ${rateTxt}: about ${money(r2((s.cash || 0) / r.f), ccy)} to spend.`
+        : `${sec.symbol} trades in ${ccy}. Proceeds are converted to ${s.cashCcy} at ${rateTxt}.`;
     } else if (r.convert) {
       ch = 'Enter a conversion rate.';
     }
@@ -291,7 +296,7 @@
 
     // Fees
     $('fee-total').textContent = money(r.fee, ccy);
-    $('tax-hint').textContent = `Defaults: 13% HST on CAD trades, 0% on USD trades. Fee is charged in ${ccy}.`;
+    $('tax-hint').textContent = `Defaults: 13% HST on CAD trades, 0% on USD trades. Fee is charged in the security's currency (${ccy}).`;
 
     // Result cards
     renderCards(r, isBuy, ccy);
@@ -302,13 +307,14 @@
   function renderCards(r, isBuy, ccy) {
     const s = state;
     const cc = r.cashCcy;
+    const msg = { sec: 'Choose a security', price: 'Enter a price', rate: 'Enter a conversion rate' }[r.reason];
     if (!r.valid) {
-      $('a-kicker').textContent = isBuy ? 'With your cash' : 'To raise your cash';
+      $('a-kicker').textContent = isBuy ? 'With your cash you can buy' : 'To raise your cash, sell';
       $('a-big').innerHTML = '—';
-      $('a-rows').innerHTML = rows([['Status', 'Enter a price', { text: true }]]);
-      $('b-kicker').textContent = isBuy ? 'Buying your quantity' : 'Selling your quantity';
+      $('a-rows').innerHTML = rows([['Next step', msg, { text: true }]]);
+      $('b-kicker').textContent = isBuy ? 'Buying your quantity costs' : 'Selling your quantity pays';
       $('b-big').innerHTML = '—';
-      $('b-rows').innerHTML = rows([['Status', 'Enter a price', { text: true }]]);
+      $('b-rows').innerHTML = rows([['Next step', msg, { text: true }]]);
       return;
     }
     const tagHtml = isBuy ? '<span class="tag buy">BUY</span>' : '<span class="tag sell">SELL</span>';
@@ -325,7 +331,8 @@
       if (r.convert) aRows.push([`Total in ${cc}`, money(a.units > 0 ? a.totalCash : 0, cc)]);
       aRows.push(['Cash left', money(a.left, cc)]);
       if (!a.coversFee) aRows.push(['Note', '<span class="loss">Cash does not cover the fee</span>', { text: true }]);
-      $('a-rows').innerHTML = rows(aRows);
+      $('a-rows').innerHTML = r.hasCash ? rows(aRows) : rows([['Next step', 'Enter your cash available', { text: true }]]);
+      if (!r.hasCash) { $('a-big').textContent = '—'; $('a-kicker').innerHTML = `${tagHtml} With your cash you can buy`; }
 
       const b = r.b;
       $('b-kicker').innerHTML = `${tagHtml} Buying ${units(b.qty)} units costs`;
@@ -336,10 +343,10 @@
         ['Total cost', money(b.total, ccy), { total: true }]
       ];
       if (r.convert) bRows.push([`Total in ${cc}`, money(b.totalCash, cc)]);
-      bRows.push(b.diff >= 0
+      if (r.hasCash) bRows.push(b.diff >= 0
         ? ['Cash left', money(b.diff, cc)]
         : ['Short by', `<span class="loss">${money(-b.diff, cc)}</span>`]);
-      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Status', 'Enter a quantity', { text: true }]]);
+      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Next step', 'Enter a quantity', { text: true }]]);
     } else {
       const a = r.a;
       $('a-kicker').innerHTML = `${tagHtml} To raise ${money(a.cash, cc)} sell`;
@@ -350,7 +357,7 @@
         ['You receive', money(a.net, ccy), { total: true }]
       ];
       if (r.convert) aRows.push([`You receive in ${cc}`, money(a.netCash, cc)]);
-      $('a-rows').innerHTML = a.units > 0 ? rows(aRows) : rows([['Status', 'Enter the cash you want to raise', { text: true }]]);
+      $('a-rows').innerHTML = a.units > 0 ? rows(aRows) : rows([['Next step', 'Enter the cash you want to raise', { text: true }]]);
 
       const b = r.b;
       $('b-kicker').innerHTML = `${tagHtml} Selling ${units(b.qty)} units pays`;
@@ -367,7 +374,7 @@
         bRows.push(['Return', signedPct(b.pct)]);
       }
       if (b.net < 0) bRows.push(['Note', '<span class="loss">Fee is larger than the sale</span>', { text: true }]);
-      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Status', 'Enter a quantity', { text: true }]]);
+      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Next step', 'Enter a quantity', { text: true }]]);
     }
   }
 
@@ -379,7 +386,7 @@
     const tr = $('tprice-range');
     if (!r.valid || !t) {
       $('t-basis').textContent = '';
-      $('t-rows').innerHTML = rows([['Status', r.valid ? 'Enter a quantity to buy' : 'Enter a price', { text: true }]]);
+      $('t-rows').innerHTML = rows([['Next step', r.valid ? 'Enter a quantity to buy' : ({ sec: 'Choose a security', price: 'Enter a price', rate: 'Enter a conversion rate' }[r.reason]), { text: true }]]);
       tr.disabled = true;
       return;
     }
@@ -407,6 +414,11 @@
   }
 
   function renderDetails(sec, ccy) {
+    if (!sec) {
+      $('d-rows').innerHTML = rows([['Next step', 'Choose a security', { text: true }]]);
+      $('cdr-box').hidden = true;
+      return;
+    }
     const items = [
       ['Coded description', `<span>${esc(sec.symbol)}</span>`],
     ];
@@ -506,6 +518,7 @@
   });
   $('price-reset').addEventListener('click', () => { setSecurityPriceToLast(); });
   function setSecurityPriceToLast() {
+    if (!state.sec) return;
     const q = PriceProvider.getQuote(state.sec);
     if (!q) return;
     state.price = q.price; state.priceSource = q.source; state.priceStatus = q.status;
@@ -517,7 +530,7 @@
   $('qty-range').addEventListener('input', (e) => { state.qty = num(e.target.value); $('qty').value = e.target.value; render(); });
   $('qty-max').addEventListener('click', () => {
     const r = compute();
-    if (r.a) { state.qty = r.a.units; $('qty').value = String(r.a.units); render(); }
+    if (r.a && r.hasCash) { state.qty = r.a.units; $('qty').value = String(r.a.units); render(); }
   });
   $('fractional').addEventListener('change', (e) => {
     state.fractional = e.target.checked;
@@ -529,7 +542,7 @@
   bindNum('taxpct', 'taxPct');
   bindNum('fxmid', 'fxMid');
   bindNum('spread', 'spreadPct');
-  document.querySelectorAll('input[name="payfrom"]').forEach((el) => el.addEventListener('change', (e) => { state.convert = e.target.value === 'convert'; render(); }));
+  document.querySelectorAll('.ccy-toggle button').forEach((b) => b.addEventListener('click', () => { state.cashCcy = b.dataset.cash; render(); }));
 
   $('tprice').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); render(); });
   $('tpct').addEventListener('input', (e) => { state.targetMode = 'pct'; state.targetPct = num(e.target.value); render(); });
@@ -550,11 +563,10 @@
   }));
 
   // ---------- Init ----------
-  $('cash').value = String(state.cash);
-  $('qty').value = String(state.qty);
   $('commission').value = String(state.commission);
   $('fxmid').value = String(state.fxMid);
   $('spread').value = String(state.spreadPct);
   $('tradetime').value = nowLocal();
-  setSecurity(window.SECURITIES[0]);
+  $('taxpct').value = String(state.taxPct);
+  render();
 })();

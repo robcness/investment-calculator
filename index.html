@@ -72,10 +72,29 @@
         </div>
 
         <div class="field">
-          <label for="cash" id="cash-label">Cash available to invest</label>
+          <label for="cash"><span id="cash-label">Cash available to invest</span> <span class="ccy" id="cash-ccy"></span></label>
           <input id="cash" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-cash">
           <p class="hint" id="cash-hint"></p>
         </div>
+
+        <fieldset class="group" id="fx-group">
+          <legend id="fx-legend">Pay with</legend>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="payfrom" value="trade" checked data-testid="radio-pay-same"> <span id="pay-same-label">CAD cash</span></label>
+            <label class="radio"><input type="radio" name="payfrom" value="convert" data-testid="radio-pay-convert"> <span id="pay-convert-label">USD cash (convert)</span></label>
+          </div>
+          <div class="two" id="fx-inputs" hidden>
+            <div class="field">
+              <label for="fxmid">USD→CAD rate</label>
+              <input id="fxmid" class="num" type="number" inputmode="decimal" min="0" step="0.0001" data-testid="input-fx-rate">
+            </div>
+            <div class="field">
+              <label for="spread">Conversion spread %</label>
+              <input id="spread" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-fx-spread">
+            </div>
+            <p class="hint span2">Rate entered manually. The 2.25% spread default comes from a third-party review of CIBC Investor's Edge; check it against your broker's pricing page.</p>
+          </div>
+        </fieldset>
 
         <div class="field">
           <div class="field-head">
@@ -92,24 +111,6 @@
           <input id="avgcost" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-avg-cost">
         </div>
 
-        <fieldset class="group" id="fx-group" hidden>
-          <legend id="fx-legend">Pay with</legend>
-          <div class="radio-row">
-            <label class="radio"><input type="radio" name="payfrom" value="USD" checked data-testid="radio-pay-usd"> <span id="fx-usd-label">USD cash</span></label>
-            <label class="radio"><input type="radio" name="payfrom" value="CAD" data-testid="radio-pay-cad"> <span id="fx-cad-label">CAD cash (convert)</span></label>
-          </div>
-          <div class="two" id="fx-inputs" hidden>
-            <div class="field">
-              <label for="fxmid">USD→CAD rate</label>
-              <input id="fxmid" class="num" type="number" inputmode="decimal" min="0" step="0.0001" data-testid="input-fx-rate">
-            </div>
-            <div class="field">
-              <label for="spread">Conversion spread %</label>
-              <input id="spread" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-fx-spread">
-            </div>
-            <p class="hint span2">Rate entered manually. The spread default (2.25%) is from a third-party review of CIBC Investor's Edge; check it against your broker's pricing page.</p>
-          </div>
-        </fieldset>
 
         <fieldset class="group">
           <legend>Trading fee per trade</legend>
@@ -136,7 +137,7 @@
             <div class="field">
               <label for="account">Account</label>
               <select id="account" data-testid="select-account">
-                <option>TFSA</option><option>RRSP</option><option>Non-registered</option>
+                <option selected>RRSP</option><option>TFSA</option><option>Non-registered</option>
               </select>
             </div>
             <div class="field">

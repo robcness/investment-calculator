@@ -9,7 +9,7 @@
     name: 'snapshot',
     getQuote(sec) {
       if (sec.last == null) return null;
-      return { price: sec.last, change: sec.change, changePct: sec.changePct, source: window.SNAPSHOT_LABEL, status: 'Snapshot' };
+      return { price: sec.last, change: sec.change, changePct: sec.changePct, source: window.SNAPSHOT_LABEL, status: 'Not live' };
     }
   };
 
@@ -92,7 +92,7 @@
     fractional: false,
     commission: DEFAULTS.commission,
     taxPct: 13,
-    payFrom: 'USD',
+    convert: false,
     fxMid: DEFAULTS.fxMid,
     spreadPct: DEFAULTS.spreadPct,
     avgCost: null,
@@ -111,7 +111,7 @@
     state.priceSource = q ? q.source : (sec.note || 'No price available');
     state.priceStatus = q ? q.status : '';
     state.taxPct = DEFAULTS.taxByCurrency[sec.currency];
-    state.payFrom = 'USD';
+    state.convert = false;
     state.avgCost = null;
     state.targetMode = 'price';
     state.targetPrice = state.price ? r2(state.price * 1.1) : null;
@@ -122,7 +122,7 @@
     setVal('avgcost', null);
     setVal('tprice', state.targetPrice);
     setVal('uprice', state.uprice);
-    document.querySelector('input[name="payfrom"][value="USD"]').checked = true;
+    document.querySelector('input[name="payfrom"][value="trade"]').checked = true;
     render();
   }
 
@@ -141,19 +141,25 @@
     const C = s.commission ?? 0;
     const tax = r2(C * (s.taxPct ?? 0) / 100);
     const fee = r2(C + tax);
-    const convert = ccy === 'USD' && s.payFrom === 'CAD';
-    const cashCcy = convert ? 'CAD' : ccy;
-    const buyRate = (s.fxMid || 0) * (1 + (s.spreadPct || 0) / 100);
-    const sellRate = (s.fxMid || 0) * (1 - (s.spreadPct || 0) / 100);
-    const out = { ccy, cashCcy, convert, tax, fee, buyRate, sellRate, valid: P > 0 };
+    const convert = !!s.convert;
+    const cashCcy = convert ? (ccy === 'USD' ? 'CAD' : 'USD') : ccy;
+    const mid = s.fxMid || 0;
+    const sp = (s.spreadPct || 0) / 100;
+    // Effective USD→CAD rate after the spread. Buying USD costs more CAD (mid × (1 + spread));
+    // selling USD returns less CAD (mid × (1 − spread)).
+    const sellingUsd = (s.side === 'buy' && ccy === 'CAD') || (s.side === 'sell' && ccy === 'USD');
+    const effRate = sellingUsd ? mid * (1 - sp) : mid * (1 + sp);
+    // f = units of cash currency per unit of trade currency
+    const f = !convert || effRate <= 0 ? 1 : (ccy === 'USD' ? effRate : 1 / effRate);
+    const out = { ccy, cashCcy, convert, tax, fee, effRate, sellingUsd, f, valid: P > 0 && (!convert || effRate > 0) };
     if (!out.valid) return out;
 
     const Q = s.qty ?? 0;
     const cash = s.cash ?? 0;
 
     if (s.side === 'buy') {
-      const toCash = (x) => (convert ? r2(x * buyRate) : x);
-      const cashTrade = convert ? (buyRate > 0 ? cash / buyRate : 0) : cash;
+      const toCash = (x) => (convert ? r2(x * f) : x);
+      const cashTrade = convert ? cash / f : cash;
       let maxU = floorUnits((cashTrade - fee) / P, s.fractional);
       const step = s.fractional ? 0.0001 : 1;
       while (maxU > 0 && toCash(r2(r2(maxU * P) + fee)) > cash) maxU = Math.max(0, r2(maxU - step) || 0);
@@ -183,8 +189,8 @@
         }
       }
     } else {
-      const toCash = (x) => (convert ? r2(x * sellRate) : x);
-      const needTrade = convert ? (sellRate > 0 ? cash / sellRate : 0) : cash;
+      const toCash = (x) => (convert ? r2(x * f) : x);
+      const needTrade = convert ? cash / f : cash;
       let u = cash > 0 ? ceilUnits((needTrade + fee) / P, s.fractional) : 0;
       const step = s.fractional ? 0.0001 : 1;
       let guard = 0;
@@ -222,7 +228,7 @@
     $('s-meta').textContent = `${sec.type} · ${sec.exchange} · ${ccy}`;
     $('s-last').textContent = sec.last != null ? price(sec.last, ccy) : '—';
     $('s-chg').innerHTML = sec.last != null ? changeHtml(sec) : '';
-    $('s-source').innerHTML = sec.last != null ? `${esc(window.SNAPSHOT_LABEL)}<span class="badge">Snapshot</span>` : esc(sec.note || '');
+    $('s-source').innerHTML = sec.last != null ? '<span class="badge">Not live</span>' : esc(sec.note || '');
 
     document.querySelectorAll('[data-ccy]').forEach((el) => { el.textContent = `(${ccy})`; });
 
@@ -263,21 +269,25 @@
     qr.value = String(s.qty || 0);
 
     // FX group
-    const usd = ccy === 'USD';
-    $('fx-group').hidden = !usd;
+    const other = ccy === 'USD' ? 'CAD' : 'USD';
     $('fx-legend').textContent = isBuy ? 'Pay with' : 'Receive proceeds as';
-    $('fx-usd-label').textContent = isBuy ? 'USD cash' : 'USD';
-    $('fx-cad-label').textContent = isBuy ? 'CAD cash (convert)' : 'CAD (convert)';
-    $('fx-inputs').hidden = !(usd && s.payFrom === 'CAD');
+    $('pay-same-label').textContent = isBuy ? `${ccy} cash` : ccy;
+    $('pay-convert-label').textContent = isBuy ? `${other} cash (convert)` : `${other} (convert)`;
+    $('fx-inputs').hidden = !s.convert;
+    $('cash-ccy').textContent = `(${r.cashCcy})`;
 
     // Cash hint
-    let ch = `In ${r.cashCcy}.`;
-    if (r.convert && r.buyRate > 0) {
+    let ch = '';
+    if (r.convert && r.effRate > 0) {
+      const rateTxt = `1 USD = ${group(r.effRate, 4, 4)} CAD (rate ${r.sellingUsd ? '−' : '+'} spread)`;
       ch = isBuy
-        ? `In CAD. Converted at ${group(r.buyRate, 4, 4)} (rate + spread): about ${money(r2((s.cash || 0) / r.buyRate), 'USD')} to spend.`
-        : `In CAD. Proceeds converted at ${group(r.sellRate, 4, 4)} (rate − spread).`;
+        ? `Converted at ${rateTxt}: about ${money(r2((s.cash || 0) / r.f), ccy)} to spend.`
+        : `Proceeds converted at ${rateTxt}.`;
+    } else if (r.convert) {
+      ch = 'Enter a conversion rate.';
     }
     $('cash-hint').textContent = ch;
+    $('cash-hint').hidden = !ch;
 
     // Fees
     $('fee-total').textContent = money(r.fee, ccy);
@@ -312,7 +322,7 @@
         ['Trading fee', money(r.fee, ccy)],
         ['Total cost', money(a.units > 0 ? a.total : 0, ccy), { total: true }]
       ];
-      if (r.convert) aRows.push(['Total in CAD', money(a.units > 0 ? a.totalCash : 0, 'CAD')]);
+      if (r.convert) aRows.push([`Total in ${cc}`, money(a.units > 0 ? a.totalCash : 0, cc)]);
       aRows.push(['Cash left', money(a.left, cc)]);
       if (!a.coversFee) aRows.push(['Note', '<span class="loss">Cash does not cover the fee</span>', { text: true }]);
       $('a-rows').innerHTML = rows(aRows);
@@ -325,7 +335,7 @@
         ['Trading fee', money(r.fee, ccy)],
         ['Total cost', money(b.total, ccy), { total: true }]
       ];
-      if (r.convert) bRows.push(['Total in CAD', money(b.totalCash, 'CAD')]);
+      if (r.convert) bRows.push([`Total in ${cc}`, money(b.totalCash, cc)]);
       bRows.push(b.diff >= 0
         ? ['Cash left', money(b.diff, cc)]
         : ['Short by', `<span class="loss">${money(-b.diff, cc)}</span>`]);
@@ -339,7 +349,7 @@
         ['Trading fee', `−${money(r.fee, ccy)}`],
         ['You receive', money(a.net, ccy), { total: true }]
       ];
-      if (r.convert) aRows.push(['You receive in CAD', money(a.netCash, 'CAD')]);
+      if (r.convert) aRows.push([`You receive in ${cc}`, money(a.netCash, cc)]);
       $('a-rows').innerHTML = a.units > 0 ? rows(aRows) : rows([['Status', 'Enter the cash you want to raise', { text: true }]]);
 
       const b = r.b;
@@ -350,7 +360,7 @@
         ['Trading fee', `−${money(r.fee, ccy)}`],
         ['You receive', money(b.net, ccy), { total: true }]
       ];
-      if (r.convert) bRows.push(['You receive in CAD', money(b.netCash, 'CAD')]);
+      if (r.convert) bRows.push([`You receive in ${cc}`, money(b.netCash, cc)]);
       if (b.gain != null) {
         bRows.push(['Your cost for these units', money(b.basis, ccy)]);
         bRows.push(['Gain or loss on sale', `${signedMoney(b.gain, ccy)}`]);
@@ -519,7 +529,7 @@
   bindNum('taxpct', 'taxPct');
   bindNum('fxmid', 'fxMid');
   bindNum('spread', 'spreadPct');
-  document.querySelectorAll('input[name="payfrom"]').forEach((el) => el.addEventListener('change', (e) => { state.payFrom = e.target.value; render(); }));
+  document.querySelectorAll('input[name="payfrom"]').forEach((el) => el.addEventListener('change', (e) => { state.convert = e.target.value === 'convert'; render(); }));
 
   $('tprice').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); render(); });
   $('tpct').addEventListener('input', (e) => { state.targetMode = 'pct'; state.targetPct = num(e.target.value); render(); });

@@ -1,9 +1,9 @@
 // Security list and reference data.
-// Prices are a snapshot from the user's CNBC watchlist on 2026-11-18 (time not recorded).
+// Starting prices are placeholders copied from the user's own list on 2026-11-18. Not live.
 // In phase 2 this list moves to a Supabase table and prices come from a quote provider
 // (see PriceProvider in app.js). Keep field names stable so the swap is a drop-in change.
 
-window.SNAPSHOT_LABEL = 'CNBC watchlist snapshot, Nov 18, 2026';
+window.SNAPSHOT_LABEL = 'Starting price from your list (Nov 18)';
 
 window.SECURITIES = [
   {

@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investment Calculator</title>
+  <meta name="description" content="Buy and sell calculator for CAD and USD securities, with fees, currency conversion and projected gain.">
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%231f2a37%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main" onclick="event.preventDefault();document.getElementById('main').focus();">Skip to calculator</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 class="brand">Investment Calculator</h1>
+
+      <div class="search" id="search">
+        <label for="sec-search" class="sr-only">Search securities</label>
+        <div class="search-field">
+          <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="sec-search" type="text" placeholder="Search symbol or company" autocomplete="off"
+                 role="combobox" aria-expanded="false" aria-controls="sec-list" aria-autocomplete="list" data-testid="input-security-search">
+        </div>
+        <div class="search-pop" id="sec-pop" hidden>
+          <p class="pop-heading" id="pop-heading">Your securities</p>
+          <ul id="sec-list" role="listbox" aria-labelledby="pop-heading"></ul>
+          <p class="pop-empty" id="pop-empty" hidden>No match in your securities list.</p>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <!-- Selected security -->
+    <section class="sec-strip" aria-label="Selected security">
+      <div class="sec-id">
+        <span class="sec-symbol" id="s-symbol" data-testid="text-symbol"></span>
+        <a class="sec-name" id="s-name" target="_blank" rel="noopener" data-testid="link-company"></a>
+        <span class="sec-meta" id="s-meta"></span>
+      </div>
+      <div class="sec-quote">
+        <span class="sec-last" id="s-last" data-testid="text-last-price"></span>
+        <span class="chg" id="s-chg"></span>
+        <span class="source" id="s-source"></span>
+      </div>
+    </section>
+
+    <div class="layout">
+      <!-- Inputs -->
+      <section class="panel inputs" aria-labelledby="h-inputs">
+        <h2 id="h-inputs" class="panel-title">Trade inputs</h2>
+
+        <fieldset class="side">
+          <legend class="sr-only">Buy or sell</legend>
+          <button type="button" class="side-btn" data-side="buy" aria-pressed="true" data-testid="button-buy">Buy</button>
+          <button type="button" class="side-btn" data-side="sell" aria-pressed="false" data-testid="button-sell">Sell</button>
+        </fieldset>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="price">Price per unit <span class="ccy" data-ccy></span></label>
+            <button type="button" class="link-btn" id="price-reset" data-testid="button-price-reset">Reset to last</button>
+          </div>
+          <input id="price" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-price">
+          <input id="price-range" type="range" aria-label="Adjust price" data-testid="slider-price">
+          <p class="hint" id="price-hint"></p>
+        </div>
+
+        <div class="field">
+          <label for="cash" id="cash-label">Cash available to invest</label>
+          <input id="cash" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-cash">
+          <p class="hint" id="cash-hint"></p>
+        </div>
+
+        <div class="field">
+          <div class="field-head">
+            <label for="qty" id="qty-label">Quantity to buy</label>
+            <button type="button" class="link-btn" id="qty-max" data-testid="button-qty-max">Use maximum</button>
+          </div>
+          <input id="qty" class="num" type="number" inputmode="decimal" min="0" step="1" data-testid="input-quantity">
+          <input id="qty-range" type="range" min="0" step="1" aria-label="Adjust quantity" data-testid="slider-quantity">
+          <label class="check"><input type="checkbox" id="fractional" data-testid="checkbox-fractional"> Allow fractional units</label>
+        </div>
+
+        <div class="field" id="avgcost-field" hidden>
+          <label for="avgcost">Your average cost per unit <span class="opt">(optional, including buy fees)</span></label>
+          <input id="avgcost" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-avg-cost">
+        </div>
+
+        <fieldset class="group" id="fx-group" hidden>
+          <legend id="fx-legend">Pay with</legend>
+          <div class="radio-row">
+            <label class="radio"><input type="radio" name="payfrom" value="USD" checked data-testid="radio-pay-usd"> <span id="fx-usd-label">USD cash</span></label>
+            <label class="radio"><input type="radio" name="payfrom" value="CAD" data-testid="radio-pay-cad"> <span id="fx-cad-label">CAD cash (convert)</span></label>
+          </div>
+          <div class="two" id="fx-inputs" hidden>
+            <div class="field">
+              <label for="fxmid">USD→CAD rate</label>
+              <input id="fxmid" class="num" type="number" inputmode="decimal" min="0" step="0.0001" data-testid="input-fx-rate">
+            </div>
+            <div class="field">
+              <label for="spread">Conversion spread %</label>
+              <input id="spread" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-fx-spread">
+            </div>
+            <p class="hint span2">Rate entered manually. The spread default (2.25%) is from a third-party review of CIBC Investor's Edge; check it against your broker's pricing page.</p>
+          </div>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>Trading fee per trade</legend>
+          <div class="three">
+            <div class="field">
+              <label for="commission">Pre-tax <span class="ccy" data-ccy></span></label>
+              <input id="commission" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-commission">
+            </div>
+            <div class="field">
+              <label for="taxpct">Tax %</label>
+              <input id="taxpct" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-tax">
+            </div>
+            <div class="field">
+              <span class="label">Total fee</span>
+              <output id="fee-total" class="num out" data-testid="text-fee-total"></output>
+            </div>
+          </div>
+          <p class="hint" id="tax-hint"></p>
+        </fieldset>
+
+        <fieldset class="group">
+          <legend>Trade details</legend>
+          <div class="two">
+            <div class="field">
+              <label for="account">Account</label>
+              <select id="account" data-testid="select-account">
+                <option>TFSA</option><option>RRSP</option><option>Non-registered</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="ordertype">Order type</label>
+              <select id="ordertype" data-testid="select-order-type">
+                <option value="limit">Limit</option><option value="market">Market</option>
+              </select>
+            </div>
+            <div class="field span2">
+              <label for="tradetime">Date and time</label>
+              <input id="tradetime" type="datetime-local" data-testid="input-trade-time">
+            </div>
+          </div>
+        </fieldset>
+      </section>
+
+      <!-- Results -->
+      <section class="results" aria-labelledby="h-results">
+        <h2 id="h-results" class="sr-only">Results</h2>
+
+        <div class="cards">
+          <article class="panel card" aria-live="polite">
+            <p class="card-kicker" id="a-kicker"></p>
+            <p class="card-big" id="a-big" data-testid="text-max-units"></p>
+            <dl class="rows" id="a-rows"></dl>
+          </article>
+          <article class="panel card" aria-live="polite">
+            <p class="card-kicker" id="b-kicker"></p>
+            <p class="card-big" id="b-big" data-testid="text-total-cost"></p>
+            <dl class="rows" id="b-rows"></dl>
+          </article>
+        </div>
+
+        <section class="panel" id="target-panel" aria-labelledby="h-target">
+          <div class="panel-head">
+            <h2 id="h-target" class="panel-title">Target price and projected gain</h2>
+            <span class="muted" id="t-basis"></span>
+          </div>
+          <div class="two">
+            <div class="field">
+              <label for="tprice">Target price <span class="ccy" data-ccy></span></label>
+              <input id="tprice" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-target-price">
+            </div>
+            <div class="field">
+              <label for="tpct">Target return %</label>
+              <input id="tpct" class="num" type="number" inputmode="decimal" step="0.1" data-testid="input-target-return">
+            </div>
+          </div>
+          <input id="tprice-range" type="range" aria-label="Adjust target price" data-testid="slider-target-price">
+          <dl class="rows wide" id="t-rows"></dl>
+          <p class="hint">Assumes the same fee to sell. Before income tax.</p>
+        </section>
+
+        <section class="panel" aria-labelledby="h-details">
+          <h2 id="h-details" class="panel-title">Security details</h2>
+          <dl class="rows wide" id="d-rows"></dl>
+          <div id="cdr-box" hidden>
+            <h3 class="sub-title">CDR price estimate from the U.S. share</h3>
+            <div class="two">
+              <div class="field">
+                <label for="uprice">U.S. share price <span class="ccy">(USD)</span></label>
+                <input id="uprice" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-underlying-price">
+              </div>
+              <div class="field">
+                <span class="label">Estimated CDR price (CAD)</span>
+                <output id="cdr-est" class="num out" data-testid="text-cdr-estimate"></output>
+              </div>
+            </div>
+            <p class="hint" id="cdr-hint"></p>
+            <button type="button" class="btn-secondary" id="use-est" data-testid="button-use-estimate">Use estimate as price</button>
+          </div>
+        </section>
+
+        <div class="record">
+          <button type="button" class="btn-primary" disabled aria-describedby="record-note" data-testid="button-record-trade">Record executed trade</button>
+          <p class="hint" id="record-note">Sign-in required. Saving confirmed trades is not switched on yet.</p>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="securities.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,550 @@
+(function () {
+  'use strict';
+
+  // ---------- Price provider ----------
+  // Phase 1: returns the snapshot stored in securities.js.
+  // Phase 2: replace getQuote with a call to a Supabase Edge Function that holds the
+  // price-feed key server-side. The rest of the app only uses this interface.
+  const PriceProvider = {
+    name: 'snapshot',
+    getQuote(sec) {
+      if (sec.last == null) return null;
+      return { price: sec.last, change: sec.change, changePct: sec.changePct, source: window.SNAPSHOT_LABEL, status: 'Snapshot' };
+    }
+  };
+
+  // ---------- Defaults ----------
+  const DEFAULTS = {
+    commission: 6.95,
+    taxByCurrency: { CAD: 13, USD: 0 },
+    fxMid: 1.43,
+    spreadPct: 2.25,
+    cash: 401.14,
+    qty: 11
+  };
+
+  // ---------- Helpers ----------
+  const $ = (id) => document.getElementById(id);
+  const r2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const prefix = (ccy) => (ccy === 'CAD' ? 'CA$' : 'US$');
+  const group = (x, min, max) => x.toLocaleString('en-CA', { minimumFractionDigits: min, maximumFractionDigits: max });
+
+  function money(x, ccy) {
+    const s = group(Math.abs(x), 2, 2);
+    return (x < 0 ? '−' : '') + prefix(ccy) + s;
+  }
+  function price(x, ccy) {
+    const dec = Math.abs(x) < 1 ? 4 : 2;
+    return prefix(ccy) + group(x, 2, dec);
+  }
+  function units(q) {
+    return group(q, 0, 4);
+  }
+  function signedMoney(x, ccy) {
+    const cls = x > 0 ? 'gain' : x < 0 ? 'loss' : 'flat';
+    const arrow = x > 0 ? '▲ +' : x < 0 ? '▼ −' : '';
+    return `<span class="pill ${cls}">${arrow}${prefix(ccy)}${group(Math.abs(x), 2, 2)}</span>`;
+  }
+  function signedPct(p) {
+    const cls = p > 0 ? 'gain' : p < 0 ? 'loss' : 'flat';
+    const sign = p > 0 ? '+' : p < 0 ? '−' : '';
+    return `<span class="${cls}">${sign}${group(Math.abs(p), 2, 2)}%</span>`;
+  }
+  function changeHtml(sec) {
+    if (sec.change == null) return '<span class="flat">No change data</span>';
+    if (sec.change === 0) return '<span class="flat">Unchanged</span>';
+    const up = sec.change > 0;
+    const cls = up ? 'gain' : 'loss';
+    const s = up ? '+' : '−';
+    return `<span class="${cls}">${up ? '▲' : '▼'} ${s}${group(Math.abs(sec.change), 2, 4)} (${s}${group(Math.abs(sec.changePct), 2, 2)}%)</span>`;
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function rows(items) {
+    return items.map(([k, v, opts = {}]) =>
+      `<dt class="${opts.total ? 'total' : ''}">${k}</dt><dd class="${[opts.total ? 'total' : '', opts.text ? 'text' : ''].join(' ')}">${v}</dd>`
+    ).join('');
+  }
+  function nowLocal() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function floorUnits(x, fractional) {
+    if (!(x > 0)) return 0;
+    return fractional ? Math.floor(x * 10000 + 1e-6) / 10000 : Math.floor(x + 1e-9);
+  }
+  function ceilUnits(x, fractional) {
+    if (!(x > 0)) return 0;
+    return fractional ? Math.ceil(x * 10000 - 1e-6) / 10000 : Math.ceil(x - 1e-9);
+  }
+
+  // ---------- State ----------
+  const state = {
+    sec: null,
+    side: 'buy',
+    price: null,
+    refPrice: null,
+    priceSource: '',
+    priceStatus: '',
+    cash: DEFAULTS.cash,
+    qty: DEFAULTS.qty,
+    fractional: false,
+    commission: DEFAULTS.commission,
+    taxPct: 13,
+    payFrom: 'USD',
+    fxMid: DEFAULTS.fxMid,
+    spreadPct: DEFAULTS.spreadPct,
+    avgCost: null,
+    targetMode: 'price',
+    targetPrice: null,
+    targetPct: 10,
+    uprice: null
+  };
+
+  // ---------- Security selection ----------
+  function setSecurity(sec) {
+    state.sec = sec;
+    const q = PriceProvider.getQuote(sec);
+    state.price = q ? q.price : null;
+    state.refPrice = state.price;
+    state.priceSource = q ? q.source : (sec.note || 'No price available');
+    state.priceStatus = q ? q.status : '';
+    state.taxPct = DEFAULTS.taxByCurrency[sec.currency];
+    state.payFrom = 'USD';
+    state.avgCost = null;
+    state.targetMode = 'price';
+    state.targetPrice = state.price ? r2(state.price * 1.1) : null;
+    state.uprice = sec.cdr ? sec.cdr.underlyingLast : null;
+
+    setVal('price', state.price == null ? null : state.price.toFixed(state.price < 1 ? 4 : 2));
+    setVal('taxpct', state.taxPct);
+    setVal('avgcost', null);
+    setVal('tprice', state.targetPrice);
+    setVal('uprice', state.uprice);
+    document.querySelector('input[name="payfrom"][value="USD"]').checked = true;
+    render();
+  }
+
+  function setVal(id, v) {
+    const el = $(id);
+    if (document.activeElement === el) return;
+    el.value = v == null ? '' : String(v);
+  }
+
+  // ---------- Calculation ----------
+  function compute() {
+    const s = state;
+    const sec = s.sec;
+    const ccy = sec.currency;
+    const P = s.price;
+    const C = s.commission ?? 0;
+    const tax = r2(C * (s.taxPct ?? 0) / 100);
+    const fee = r2(C + tax);
+    const convert = ccy === 'USD' && s.payFrom === 'CAD';
+    const cashCcy = convert ? 'CAD' : ccy;
+    const buyRate = (s.fxMid || 0) * (1 + (s.spreadPct || 0) / 100);
+    const sellRate = (s.fxMid || 0) * (1 - (s.spreadPct || 0) / 100);
+    const out = { ccy, cashCcy, convert, tax, fee, buyRate, sellRate, valid: P > 0 };
+    if (!out.valid) return out;
+
+    const Q = s.qty ?? 0;
+    const cash = s.cash ?? 0;
+
+    if (s.side === 'buy') {
+      const toCash = (x) => (convert ? r2(x * buyRate) : x);
+      const cashTrade = convert ? (buyRate > 0 ? cash / buyRate : 0) : cash;
+      let maxU = floorUnits((cashTrade - fee) / P, s.fractional);
+      const step = s.fractional ? 0.0001 : 1;
+      while (maxU > 0 && toCash(r2(r2(maxU * P) + fee)) > cash) maxU = Math.max(0, r2(maxU - step) || 0);
+      const aCost = r2(maxU * P);
+      const aTotal = r2(aCost + fee);
+      out.a = { units: maxU, cost: aCost, total: aTotal, totalCash: toCash(aTotal), left: r2(cash - (maxU > 0 ? toCash(aTotal) : 0)), cash, cashTrade, coversFee: cashTrade > fee };
+
+      const bCost = r2(Q * P);
+      const bTotal = r2(bCost + fee);
+      out.b = { qty: Q, cost: bCost, total: bTotal, totalCash: toCash(bTotal), diff: r2(cash - toCash(bTotal)) };
+
+      // Target price / projected gain
+      if (Q > 0) {
+        const buyTotal = bTotal;
+        const be = Math.ceil(((buyTotal + fee) / Q) * 100 - 1e-6) / 100;
+        let T = s.targetPrice;
+        if (s.targetMode === 'pct' && s.targetPct != null) {
+          T = Math.ceil(((buyTotal * (1 + s.targetPct / 100) + fee) / Q) * 100 - 1e-6) / 100;
+        }
+        if (T != null && T >= 0) {
+          const proceeds = r2(r2(Q * T) - fee);
+          const gain = r2(proceeds - buyTotal);
+          const pct = buyTotal > 0 ? (gain / buyTotal) * 100 : 0;
+          out.t = { T, be, buyTotal, proceeds, gain, pct, Q };
+        } else {
+          out.t = { T: null, be, buyTotal, Q };
+        }
+      }
+    } else {
+      const toCash = (x) => (convert ? r2(x * sellRate) : x);
+      const needTrade = convert ? (sellRate > 0 ? cash / sellRate : 0) : cash;
+      let u = cash > 0 ? ceilUnits((needTrade + fee) / P, s.fractional) : 0;
+      const step = s.fractional ? 0.0001 : 1;
+      let guard = 0;
+      while (u > 0 && toCash(r2(r2(u * P) - fee)) < cash && guard++ < 50) u = r2(u + step);
+      const aGross = r2(u * P);
+      const aNet = r2(aGross - fee);
+      out.a = { units: u, gross: aGross, net: aNet, netCash: toCash(aNet), cash };
+
+      const gross = r2(Q * P);
+      const net = r2(gross - fee);
+      out.b = { qty: Q, gross, net, netCash: toCash(net) };
+      if (s.avgCost != null && s.avgCost > 0 && Q > 0) {
+        const basis = r2(s.avgCost * Q);
+        const gain = r2(net - basis);
+        out.b.basis = basis;
+        out.b.gain = gain;
+        out.b.pct = (gain / basis) * 100;
+      }
+    }
+    return out;
+  }
+
+  // ---------- Render ----------
+  function render() {
+    const s = state;
+    const sec = s.sec;
+    const ccy = sec.currency;
+    const isBuy = s.side === 'buy';
+    const r = compute();
+
+    // Selected security strip
+    $('s-symbol').textContent = sec.symbol;
+    $('s-name').textContent = sec.name;
+    $('s-name').href = sec.website;
+    $('s-meta').textContent = `${sec.type} · ${sec.exchange} · ${ccy}`;
+    $('s-last').textContent = sec.last != null ? price(sec.last, ccy) : '—';
+    $('s-chg').innerHTML = sec.last != null ? changeHtml(sec) : '';
+    $('s-source').innerHTML = sec.last != null ? `${esc(window.SNAPSHOT_LABEL)}<span class="badge">Snapshot</span>` : esc(sec.note || '');
+
+    document.querySelectorAll('[data-ccy]').forEach((el) => { el.textContent = `(${ccy})`; });
+
+    // Side buttons
+    document.querySelectorAll('.side-btn').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.side === s.side)));
+
+    // Price
+    const pr = $('price-range');
+    const ref = s.refPrice || s.price || 10;
+    const lo = Math.min(ref * 0.5, s.price || ref);
+    const hi = Math.max(ref * 1.5, s.price || ref);
+    const pStep = ref < 1 ? 0.001 : 0.01;
+    pr.min = (Math.floor(lo / pStep) * pStep).toFixed(3);
+    pr.max = (Math.ceil(hi / pStep) * pStep).toFixed(3);
+    pr.step = pStep;
+    $('price').step = pStep;
+    if (s.price != null) pr.value = s.price;
+    pr.disabled = s.price == null && s.refPrice == null;
+    $('price-reset').hidden = s.refPrice == null || s.price === s.refPrice;
+    $('price').setAttribute('aria-invalid', String(!(s.price > 0)));
+    const statusBadge = s.priceStatus ? `<span class="badge">${esc(s.priceStatus)}</span>` : '';
+    $('price-hint').innerHTML = s.price > 0
+      ? `${esc(s.priceSource)}${statusBadge}`
+      : `<span class="warn">Enter a price to calculate.</span> ${esc(sec.note || '')}`;
+
+    // Cash, quantity labels
+    $('cash-label').textContent = isBuy ? 'Cash available to invest' : 'Cash you want to raise';
+    $('qty-label').textContent = isBuy ? 'Quantity to buy' : 'Quantity to sell';
+    $('qty-max').hidden = !isBuy;
+    $('avgcost-field').hidden = isBuy;
+
+    // Fractional
+    $('qty').step = s.fractional ? '0.0001' : '1';
+    const qr = $('qty-range');
+    qr.step = s.fractional ? '0.0001' : '1';
+    const maxU = r.a ? r.a.units : 0;
+    qr.max = String(Math.max(10, Math.ceil(maxU * 1.5), Math.ceil((s.qty || 0) * (isBuy ? 1 : 2))));
+    qr.value = String(s.qty || 0);
+
+    // FX group
+    const usd = ccy === 'USD';
+    $('fx-group').hidden = !usd;
+    $('fx-legend').textContent = isBuy ? 'Pay with' : 'Receive proceeds as';
+    $('fx-usd-label').textContent = isBuy ? 'USD cash' : 'USD';
+    $('fx-cad-label').textContent = isBuy ? 'CAD cash (convert)' : 'CAD (convert)';
+    $('fx-inputs').hidden = !(usd && s.payFrom === 'CAD');
+
+    // Cash hint
+    let ch = `In ${r.cashCcy}.`;
+    if (r.convert && r.buyRate > 0) {
+      ch = isBuy
+        ? `In CAD. Converted at ${group(r.buyRate, 4, 4)} (rate + spread): about ${money(r2((s.cash || 0) / r.buyRate), 'USD')} to spend.`
+        : `In CAD. Proceeds converted at ${group(r.sellRate, 4, 4)} (rate − spread).`;
+    }
+    $('cash-hint').textContent = ch;
+
+    // Fees
+    $('fee-total').textContent = money(r.fee, ccy);
+    $('tax-hint').textContent = `Defaults: 13% HST on CAD trades, 0% on USD trades. Fee is charged in ${ccy}.`;
+
+    // Result cards
+    renderCards(r, isBuy, ccy);
+    renderTarget(r, isBuy, ccy);
+    renderDetails(sec, ccy);
+  }
+
+  function renderCards(r, isBuy, ccy) {
+    const s = state;
+    const cc = r.cashCcy;
+    if (!r.valid) {
+      $('a-kicker').textContent = isBuy ? 'With your cash' : 'To raise your cash';
+      $('a-big').innerHTML = '—';
+      $('a-rows').innerHTML = rows([['Status', 'Enter a price', { text: true }]]);
+      $('b-kicker').textContent = isBuy ? 'Buying your quantity' : 'Selling your quantity';
+      $('b-big').innerHTML = '—';
+      $('b-rows').innerHTML = rows([['Status', 'Enter a price', { text: true }]]);
+      return;
+    }
+    const tagHtml = isBuy ? '<span class="tag buy">BUY</span>' : '<span class="tag sell">SELL</span>';
+
+    if (isBuy) {
+      const a = r.a;
+      $('a-kicker').innerHTML = `${tagHtml} With ${money(a.cash, cc)} you can buy`;
+      $('a-big').innerHTML = `${units(a.units)} <small>units</small>`;
+      const aRows = [
+        [`Cost of ${units(a.units)} units`, money(a.cost, ccy)],
+        ['Trading fee', money(r.fee, ccy)],
+        ['Total cost', money(a.units > 0 ? a.total : 0, ccy), { total: true }]
+      ];
+      if (r.convert) aRows.push(['Total in CAD', money(a.units > 0 ? a.totalCash : 0, 'CAD')]);
+      aRows.push(['Cash left', money(a.left, cc)]);
+      if (!a.coversFee) aRows.push(['Note', '<span class="loss">Cash does not cover the fee</span>', { text: true }]);
+      $('a-rows').innerHTML = rows(aRows);
+
+      const b = r.b;
+      $('b-kicker').innerHTML = `${tagHtml} Buying ${units(b.qty)} units costs`;
+      $('b-big').textContent = b.qty > 0 ? money(r.convert ? b.totalCash : b.total, cc) : '—';
+      const bRows = [
+        [`${units(b.qty)} × ${price(s.price, ccy)}`, money(b.cost, ccy)],
+        ['Trading fee', money(r.fee, ccy)],
+        ['Total cost', money(b.total, ccy), { total: true }]
+      ];
+      if (r.convert) bRows.push(['Total in CAD', money(b.totalCash, 'CAD')]);
+      bRows.push(b.diff >= 0
+        ? ['Cash left', money(b.diff, cc)]
+        : ['Short by', `<span class="loss">${money(-b.diff, cc)}</span>`]);
+      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Status', 'Enter a quantity', { text: true }]]);
+    } else {
+      const a = r.a;
+      $('a-kicker').innerHTML = `${tagHtml} To raise ${money(a.cash, cc)} sell`;
+      $('a-big').innerHTML = a.units > 0 ? `${units(a.units)} <small>units</small>` : '—';
+      const aRows = [
+        [`${units(a.units)} × ${price(s.price, ccy)}`, money(a.gross, ccy)],
+        ['Trading fee', `−${money(r.fee, ccy)}`],
+        ['You receive', money(a.net, ccy), { total: true }]
+      ];
+      if (r.convert) aRows.push(['You receive in CAD', money(a.netCash, 'CAD')]);
+      $('a-rows').innerHTML = a.units > 0 ? rows(aRows) : rows([['Status', 'Enter the cash you want to raise', { text: true }]]);
+
+      const b = r.b;
+      $('b-kicker').innerHTML = `${tagHtml} Selling ${units(b.qty)} units pays`;
+      $('b-big').textContent = b.qty > 0 ? money(r.convert ? b.netCash : b.net, cc) : '—';
+      const bRows = [
+        [`${units(b.qty)} × ${price(s.price, ccy)}`, money(b.gross, ccy)],
+        ['Trading fee', `−${money(r.fee, ccy)}`],
+        ['You receive', money(b.net, ccy), { total: true }]
+      ];
+      if (r.convert) bRows.push(['You receive in CAD', money(b.netCash, 'CAD')]);
+      if (b.gain != null) {
+        bRows.push(['Your cost for these units', money(b.basis, ccy)]);
+        bRows.push(['Gain or loss on sale', `${signedMoney(b.gain, ccy)}`]);
+        bRows.push(['Return', signedPct(b.pct)]);
+      }
+      if (b.net < 0) bRows.push(['Note', '<span class="loss">Fee is larger than the sale</span>', { text: true }]);
+      $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Status', 'Enter a quantity', { text: true }]]);
+    }
+  }
+
+  function renderTarget(r, isBuy, ccy) {
+    const panel = $('target-panel');
+    panel.hidden = !isBuy;
+    if (!isBuy) return;
+    const t = r.t;
+    const tr = $('tprice-range');
+    if (!r.valid || !t) {
+      $('t-basis').textContent = '';
+      $('t-rows').innerHTML = rows([['Status', r.valid ? 'Enter a quantity to buy' : 'Enter a price', { text: true }]]);
+      tr.disabled = true;
+      return;
+    }
+    tr.disabled = false;
+    $('t-basis').textContent = `Based on buying ${units(t.Q)} units at ${price(state.price, ccy)}`;
+    const P = state.price;
+    tr.min = (P * 0.5).toFixed(2);
+    tr.max = (Math.max(P * 2, (t.T || 0) * 1.1)).toFixed(2);
+    tr.step = P < 1 ? '0.001' : '0.01';
+    if (t.T != null) tr.value = String(t.T);
+
+    if (state.targetMode === 'pct') setVal('tprice', t.T);
+    else setVal('tpct', t.pct != null ? r2(t.pct) : null);
+
+    const items = [
+      ['Total buy cost', money(t.buyTotal, ccy)],
+      ['Break-even price', price(t.be, ccy)]
+    ];
+    if (t.T != null) {
+      items.push([`Value at ${price(t.T, ccy)} after sell fee`, money(t.proceeds, ccy)]);
+      items.push(['Projected gain', signedMoney(t.gain, ccy)]);
+      items.push(['Return', signedPct(t.pct)]);
+    }
+    $('t-rows').innerHTML = rows(items);
+  }
+
+  function renderDetails(sec, ccy) {
+    const items = [
+      ['Coded description', `<span>${esc(sec.symbol)}</span>`],
+    ];
+    if (sec.brokerDescription) items.push(['Broker description', esc(sec.brokerDescription), { text: true }]);
+    items.push(['Decoded description', `<a href="${esc(sec.website)}" target="_blank" rel="noopener" data-testid="link-decoded">${esc(sec.name)}</a>${sec.issuer && sec.issuer !== sec.name ? ` · ${esc(sec.issuer)}` : ''}`, { text: true }]);
+    items.push(['Security type', esc(sec.type === 'CDR' ? 'CDR (Canadian Depositary Receipt), equity' : sec.type), { text: true }]);
+    items.push(['Exchange', esc(sec.exchange), { text: true }]);
+    items.push(['Trading currency', ccy, { text: true }]);
+    if (sec.cdr) items.push(['Tracks', `${esc(sec.cdr.underlyingTicker)} on ${esc(sec.cdr.underlyingExchange)} (USD)`, { text: true }]);
+    $('d-rows').innerHTML = rows(items);
+
+    const box = $('cdr-box');
+    box.hidden = !sec.cdr;
+    if (!sec.cdr) return;
+    const c = sec.cdr;
+    const hasRatio = c.ratio != null && c.fxForward != null;
+    $('uprice').disabled = !hasRatio;
+    const est = hasRatio && state.uprice > 0 ? r2(state.uprice * c.ratio * c.fxForward) : null;
+    $('cdr-est').textContent = est != null ? price(est, 'CAD') : '—';
+    $('use-est').disabled = est == null;
+    $('use-est').dataset.est = est != null ? String(est) : '';
+    $('cdr-hint').innerHTML = hasRatio
+      ? `U.S. price × CDR ratio ${c.ratio} × FX forward ${c.fxForward}, from <a href="${esc(c.sourceUrl)}" target="_blank" rel="noopener">CIBC's CDR directory</a> (${esc(c.asOf)}). An estimate only; the price you get comes from the exchange.`
+      : `CIBC hasn't published a ratio for this CDR yet. Enter the price manually once it trades.`;
+  }
+
+  // ---------- Search (combobox) ----------
+  const search = $('sec-search');
+  const pop = $('sec-pop');
+  const list = $('sec-list');
+  let matches = [];
+  let active = -1;
+
+  function filter(q) {
+    q = q.trim().toLowerCase();
+    return window.SECURITIES.filter((s) => !q || s.symbol.toLowerCase().includes(q) || s.ticker.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || (s.issuer || '').toLowerCase().includes(q));
+  }
+  function openPop() {
+    matches = filter(search.value);
+    active = matches.length ? 0 : -1;
+    list.innerHTML = matches.map((s, i) => `
+      <li class="opt-row" role="option" id="opt-${i}" aria-selected="${i === active}" data-i="${i}" data-testid="option-security-${esc(s.symbol)}">
+        <span class="opt-sym">${esc(s.symbol)}</span><span class="opt-sep">|</span>
+        <span class="opt-name">${esc(s.name)}</span><span class="opt-sep">|</span>
+        <span class="opt-price">${s.last != null ? group(s.last, 2, 4) + ' ' + s.currency : 'No price'}</span>
+        <span class="opt-chg">${s.last != null ? changeHtml(s) : ''}</span>
+      </li>`).join('');
+    $('pop-heading').textContent = search.value.trim() ? `Matches (${matches.length})` : `Your securities (${matches.length})`;
+    $('pop-empty').hidden = matches.length > 0;
+    pop.hidden = false;
+    search.setAttribute('aria-expanded', 'true');
+    updateActive();
+  }
+  function closePop() {
+    pop.hidden = true;
+    search.setAttribute('aria-expanded', 'false');
+    search.removeAttribute('aria-activedescendant');
+  }
+  function updateActive() {
+    list.querySelectorAll('.opt-row').forEach((el, i) => el.setAttribute('aria-selected', String(i === active)));
+    if (active >= 0) {
+      search.setAttribute('aria-activedescendant', `opt-${active}`);
+      const el = $(`opt-${active}`);
+      if (el) el.scrollIntoView({ block: 'nearest' });
+    } else search.removeAttribute('aria-activedescendant');
+  }
+  function choose(i) {
+    const sec = matches[i];
+    if (!sec) return;
+    search.value = '';
+    closePop();
+    search.blur();
+    setSecurity(sec);
+  }
+  search.addEventListener('focus', openPop);
+  search.addEventListener('input', openPop);
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (pop.hidden) openPop(); active = Math.min(matches.length - 1, active + 1); updateActive(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); updateActive(); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (active >= 0) choose(active); }
+    else if (e.key === 'Escape') { closePop(); search.blur(); }
+  });
+  list.addEventListener('mousedown', (e) => {
+    const row = e.target.closest('.opt-row');
+    if (row) { e.preventDefault(); choose(Number(row.dataset.i)); }
+  });
+  document.addEventListener('mousedown', (e) => { if (!$('search').contains(e.target)) closePop(); });
+
+  // ---------- Input wiring ----------
+  function bindNum(id, key, after) {
+    $(id).addEventListener('input', (e) => { state[key] = num(e.target.value); if (after) after(); render(); });
+  }
+  bindNum('price', 'price', () => { state.priceSource = 'Entered manually'; state.priceStatus = 'Manual'; });
+  $('price-range').addEventListener('input', (e) => {
+    state.price = num(e.target.value); state.priceSource = 'Adjusted with slider'; state.priceStatus = 'Manual';
+    $('price').value = e.target.value; render();
+  });
+  $('price-reset').addEventListener('click', () => { setSecurityPriceToLast(); });
+  function setSecurityPriceToLast() {
+    const q = PriceProvider.getQuote(state.sec);
+    if (!q) return;
+    state.price = q.price; state.priceSource = q.source; state.priceStatus = q.status;
+    $('price').value = String(q.price); render();
+  }
+
+  bindNum('cash', 'cash');
+  bindNum('qty', 'qty');
+  $('qty-range').addEventListener('input', (e) => { state.qty = num(e.target.value); $('qty').value = e.target.value; render(); });
+  $('qty-max').addEventListener('click', () => {
+    const r = compute();
+    if (r.a) { state.qty = r.a.units; $('qty').value = String(r.a.units); render(); }
+  });
+  $('fractional').addEventListener('change', (e) => {
+    state.fractional = e.target.checked;
+    if (!state.fractional && state.qty != null) { state.qty = Math.floor(state.qty); $('qty').value = String(state.qty); }
+    render();
+  });
+  bindNum('avgcost', 'avgCost');
+  bindNum('commission', 'commission');
+  bindNum('taxpct', 'taxPct');
+  bindNum('fxmid', 'fxMid');
+  bindNum('spread', 'spreadPct');
+  document.querySelectorAll('input[name="payfrom"]').forEach((el) => el.addEventListener('change', (e) => { state.payFrom = e.target.value; render(); }));
+
+  $('tprice').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); render(); });
+  $('tpct').addEventListener('input', (e) => { state.targetMode = 'pct'; state.targetPct = num(e.target.value); render(); });
+  $('tprice-range').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); $('tprice').value = e.target.value; render(); });
+
+  bindNum('uprice', 'uprice');
+  $('use-est').addEventListener('click', (e) => {
+    const est = num(e.currentTarget.dataset.est);
+    if (est == null) return;
+    state.price = est; state.priceSource = 'Estimated from the U.S. share price'; state.priceStatus = 'Estimate';
+    $('price').value = String(est); render();
+  });
+
+  document.querySelectorAll('.side-btn').forEach((b) => b.addEventListener('click', () => {
+    state.side = b.dataset.side;
+    if (state.side === 'buy' && state.targetMode === 'price' && state.targetPrice == null && state.price) state.targetPrice = r2(state.price * 1.1);
+    render();
+  }));
+
+  // ---------- Init ----------
+  $('cash').value = String(state.cash);
+  $('qty').value = String(state.qty);
+  $('commission').value = String(state.commission);
+  $('fxmid').value = String(state.fxMid);
+  $('spread').value = String(state.spreadPct);
+  $('tradetime').value = nowLocal();
+  setSecurity(window.SECURITIES[0]);
+})();

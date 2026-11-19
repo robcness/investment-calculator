@@ -13,11 +13,46 @@
     }
   };
 
+  // ---------- Exchange rate (free, no key) ----------
+  // Live: Coinbase public exchange-rate endpoint (updates about every minute).
+  // Reference and fallback: Bank of Canada daily average (Valet API, published once per business day).
+  const FX = { live: null, liveTime: null, boc: null, bocDate: null, manual: false, error: false };
+  async function loadFx() {
+    const [live, boc] = await Promise.allSettled([
+      fetch('https://api.coinbase.com/v2/exchange-rates?currency=USD', { cache: 'no-store' }).then((r) => r.json()),
+      fetch('https://www.bankofcanada.ca/valet/observations/FXUSDCAD/json?recent=1').then((r) => r.json())
+    ]);
+    if (live.status === 'fulfilled') {
+      const v = parseFloat(live.value?.data?.rates?.CAD);
+      if (v > 0) { FX.live = v; FX.liveTime = new Date(); }
+    }
+    if (boc.status === 'fulfilled') {
+      const o = boc.value?.observations?.[0];
+      const v = parseFloat(o?.FXUSDCAD?.v);
+      if (v > 0) { FX.boc = v; FX.bocDate = o.d; }
+    }
+    FX.error = !FX.live && !FX.boc;
+    if (!FX.manual) applyFx();
+    render();
+  }
+  function fxBest() { return FX.live ?? FX.boc; }
+  function applyFx() {
+    const v = fxBest();
+    if (v) { state.fxMid = Math.round(v * 10000) / 10000; setVal('fxmid', state.fxMid.toFixed(4)); }
+  }
+  function fxSourceHtml() {
+    const t = FX.liveTime ? FX.liveTime.toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '';
+    const live = FX.live ? `Live: ${FX.live.toFixed(4)} (<a href="https://www.coinbase.com/converter/usd/cad" target="_blank" rel="noopener">Coinbase</a>, ${t})` : 'Live rate unavailable';
+    const boc = FX.boc ? `Bank of Canada daily: ${FX.boc.toFixed(4)} (<a href="https://www.bankofcanada.ca/rates/exchange/daily-exchange-rates/" target="_blank" rel="noopener">${esc(new Date(FX.bocDate + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }))}</a>)` : '';
+    const lead = FX.manual ? 'Using your rate. ' : FX.live ? 'Using the live rate. ' : FX.boc ? 'Using the Bank of Canada rate. ' : '';
+    if (FX.error && !FX.manual) return 'Could not load a rate. Enter one manually.';
+    return lead + [live, boc].filter(Boolean).join(' · ');
+  }
+
   // ---------- Defaults ----------
   const DEFAULTS = {
     commission: 6.95,
     taxByCurrency: { CAD: 13, USD: 0 },
-    fxMid: 1.43,
     spreadPct: 2.25,
     cash: 401.14,
     qty: 11
@@ -62,7 +97,7 @@
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function rows(items) {
     return items.map(([k, v, opts = {}]) =>
-      `<dt class="${opts.total ? 'total' : ''}">${k}</dt><dd class="${[opts.total ? 'total' : '', opts.text ? 'text' : ''].join(' ')}">${v}</dd>`
+      `<dt class="${[opts.total ? 'total' : '', opts.neg ? 'neg' : ''].join(' ')}">${k}</dt><dd class="${[opts.total ? 'total' : '', opts.text ? 'text' : '', opts.neg ? 'neg' : ''].join(' ')}">${v}</dd>`
     ).join('');
   }
   function nowLocal() {
@@ -93,7 +128,7 @@
     fractional: false,
     commission: DEFAULTS.commission,
     taxPct: 13,
-    fxMid: DEFAULTS.fxMid,
+    fxMid: null,
     spreadPct: DEFAULTS.spreadPct,
     avgCost: null,
     targetMode: 'price',
@@ -280,6 +315,8 @@
     // Cash currency
     document.querySelectorAll('.ccy-toggle button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.cash === s.cashCcy)));
     $('fx-inputs').hidden = !r.convert;
+    $('fx-src').innerHTML = fxSourceHtml();
+    $('fx-live').hidden = !(FX.manual && fxBest());
 
     // Cash hint
     let ch = '';
@@ -329,7 +366,7 @@
         ['Total cost', money(a.units > 0 ? a.total : 0, ccy), { total: true }]
       ];
       if (r.convert) aRows.push([`Total in ${cc}`, money(a.units > 0 ? a.totalCash : 0, cc)]);
-      aRows.push(['Cash left', money(a.left, cc)]);
+      aRows.push(['Cash left', money(a.left, cc), { neg: a.left < 0 }]);
       if (!a.coversFee) aRows.push(['Note', '<span class="loss">Cash does not cover the fee</span>', { text: true }]);
       $('a-rows').innerHTML = r.hasCash ? rows(aRows) : rows([['Next step', 'Enter your cash available', { text: true }]]);
       if (!r.hasCash) { $('a-big').textContent = '—'; $('a-kicker').innerHTML = `${tagHtml} With your cash you can buy`; }
@@ -343,9 +380,7 @@
         ['Total cost', money(b.total, ccy), { total: true }]
       ];
       if (r.convert) bRows.push([`Total in ${cc}`, money(b.totalCash, cc)]);
-      if (r.hasCash) bRows.push(b.diff >= 0
-        ? ['Cash left', money(b.diff, cc)]
-        : ['Short by', `<span class="loss">${money(-b.diff, cc)}</span>`]);
+      if (r.hasCash) bRows.push(['Cash left', money(b.diff, cc), { neg: b.diff < 0 }]);
       $('b-rows').innerHTML = b.qty > 0 ? rows(bRows) : rows([['Next step', 'Enter a quantity', { text: true }]]);
     } else {
       const a = r.a;
@@ -365,9 +400,9 @@
       const bRows = [
         [`${units(b.qty)} × ${price(s.price, ccy)}`, money(b.gross, ccy)],
         ['Trading fee', `−${money(r.fee, ccy)}`],
-        ['You receive', money(b.net, ccy), { total: true }]
+        ['You receive', money(b.net, ccy), { total: !(b.net < 0), neg: b.net < 0 }]
       ];
-      if (r.convert) bRows.push([`You receive in ${cc}`, money(b.netCash, cc)]);
+      if (r.convert) bRows.push([`You receive in ${cc}`, money(b.netCash, cc), { neg: b.netCash < 0 }]);
       if (b.gain != null) {
         bRows.push(['Your cost for these units', money(b.basis, ccy)]);
         bRows.push(['Gain or loss on sale', `${signedMoney(b.gain, ccy)}`]);
@@ -540,7 +575,8 @@
   bindNum('avgcost', 'avgCost');
   bindNum('commission', 'commission');
   bindNum('taxpct', 'taxPct');
-  bindNum('fxmid', 'fxMid');
+  bindNum('fxmid', 'fxMid', () => { FX.manual = true; });
+  $('fx-live').addEventListener('click', () => { FX.manual = false; applyFx(); render(); });
   bindNum('spread', 'spreadPct');
   document.querySelectorAll('.ccy-toggle button').forEach((b) => b.addEventListener('click', () => { state.cashCcy = b.dataset.cash; render(); }));
 
@@ -564,9 +600,31 @@
 
   // ---------- Init ----------
   $('commission').value = String(state.commission);
-  $('fxmid').value = String(state.fxMid);
+  // Reset
+  $('reset').addEventListener('click', () => {
+    Object.assign(state, {
+      sec: null, side: 'buy', price: null, refPrice: null, priceSource: '', priceStatus: '',
+      cash: null, cashCcy: 'CAD', qty: null, fractional: false, commission: DEFAULTS.commission,
+      taxPct: DEFAULTS.taxByCurrency.CAD, spreadPct: DEFAULTS.spreadPct, avgCost: null,
+      targetMode: 'price', targetPrice: null, targetPct: 10, uprice: null
+    });
+    ['price', 'cash', 'qty', 'avgcost', 'tprice', 'tpct', 'uprice', 'sec-search'].forEach((id) => { $(id).value = ''; });
+    $('commission').value = String(DEFAULTS.commission);
+    $('taxpct').value = String(DEFAULTS.taxByCurrency.CAD);
+    $('spread').value = String(DEFAULTS.spreadPct);
+    $('fractional').checked = false;
+    $('account').value = 'RRSP';
+    $('ordertype').value = 'limit';
+    $('tradetime').value = nowLocal();
+    FX.manual = false; applyFx();
+    closePop();
+    render();
+    window.scrollTo({ top: 0 });
+  });
   $('spread').value = String(state.spreadPct);
   $('tradetime').value = nowLocal();
   $('taxpct').value = String(state.taxPct);
   render();
+  loadFx();
+  setInterval(() => { loadFx(); }, 60000);
 })();

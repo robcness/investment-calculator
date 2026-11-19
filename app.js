@@ -7,6 +7,7 @@
   // price-feed key server-side. The rest of the app only uses this interface.
   // Live: U.S. quotes from Finnhub through the Supabase "quotes" function (key stays server-side).
   // CDRs: estimated from the live U.S. price × CIBC's daily CDR ratio and FX forward.
+  // Interlisted Canadian shares (usListing): estimated from the live U.S. price × the live USD→CAD rate.
   // Everything else falls back to the starting price in securities.js.
   const Live = { quotes: {}, cdr: {}, at: null, ok: false, error: null };
   const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '');
@@ -33,6 +34,23 @@
           };
         }
       }
+      if (sec.usListing && sec.currency === 'CAD') {
+        const q = Live.quotes[sec.usListing.ticker];
+        const fx = fxBest();
+        if (q && q.price > 0 && fx) {
+          const dp = q.price * fx < 1 ? 4 : 2;
+          const rnd = (v) => Math.round(v * 10 ** dp) / 10 ** dp;
+          const est = rnd(q.price * fx);
+          const prev = q.prevClose > 0 ? q.prevClose * fx : null;
+          return {
+            price: est,
+            change: prev != null ? rnd(est - prev) : null,
+            changePct: q.changePct,
+            source: `Estimated from ${sec.usListing.ticker} US$${q.price.toFixed(2)} on ${sec.usListing.exchange} × ${FX.live ? 'live' : 'Bank of Canada'} rate ${fx.toFixed(4)} (Finnhub, ${fmtTime(q.time)})`,
+            status: 'Estimate'
+          };
+        }
+      }
       if (sec.last == null) return null;
       return { price: sec.last, change: sec.change, changePct: sec.changePct, source: window.SNAPSHOT_LABEL, status: 'Not live' };
     }
@@ -44,7 +62,8 @@
     const list = window.SECURITIES;
     const syms = [...new Set([
       ...list.filter((s) => s.currency === 'USD').map((s) => s.ticker),
-      ...list.filter((s) => s.cdr).map((s) => s.cdr.underlyingTicker)
+      ...list.filter((s) => s.cdr).map((s) => s.cdr.underlyingTicker),
+      ...list.filter((s) => s.usListing).map((s) => s.usListing.ticker)
     ])];
     const cdrs = list.filter((s) => s.cdr).map((s) => s.ticker);
     try {
@@ -113,7 +132,9 @@
     }
     FX.error = !FX.live && !FX.boc;
     if (!FX.manual) applyFx();
+    refreshSelectedPrice();
     render();
+    if (!$('sec-pop').hidden) openPop();
   }
   function fxBest() { return FX.live ?? FX.boc; }
   function applyFx() {
@@ -554,6 +575,7 @@
     items.push(['Security type', esc(sec.type === 'CDR' ? 'CDR (Canadian Depositary Receipt), equity' : sec.type), { text: true }]);
     items.push(['Exchange', esc(sec.exchange), { text: true }]);
     items.push(['Trading currency', ccy, { text: true }]);
+    if (sec.usListing) items.push(['Also trades as', `${esc(sec.usListing.ticker)} on ${esc(sec.usListing.exchange)} (USD). The CAD price shown is an estimate: U.S. price × live USD→CAD rate, before any spread. The price you get comes from the TSX.`, { text: true }]);
     if (sec.cdr) items.push(['Tracks', `${esc(sec.cdr.underlyingTicker)} on ${esc(sec.cdr.underlyingExchange)} (USD)`, { text: true }]);
     $('d-rows').innerHTML = rows(items);
 

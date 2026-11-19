@@ -33,11 +33,13 @@ window.SECURITIES = [
   {
     symbol: 'XNDU-CA', ticker: 'XNDU', exchange: 'TSX', currency: 'CAD', type: 'Equity',
     name: 'Xanadu Quantum Technologies Limited', issuer: 'Xanadu Quantum Technologies Limited', website: 'https://www.xanadu.ai',
+    usListing: { ticker: 'XNDU', exchange: 'Nasdaq' },
     brokerDescription: null, last: 2.78, change: 0.05, changePct: 1.83
   },
   {
     symbol: 'BB-CA', ticker: 'BB', exchange: 'TSX', currency: 'CAD', type: 'Equity',
     name: 'BlackBerry Limited', issuer: 'BlackBerry Limited', website: 'https://www.blackberry.com',
+    usListing: { ticker: 'BB', exchange: 'NYSE' },
     brokerDescription: null, last: 12.34, change: 0.71, changePct: 6.10
   },
   {

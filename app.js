@@ -48,7 +48,11 @@
     ])];
     const cdrs = list.filter((s) => s.cdr).map((s) => s.ticker);
     try {
-      const res = await fetch(`${url}?symbols=${syms.join(',')}&cdr=${cdrs.join(',')}`, { cache: 'no-store' });
+      const key = (window.APP_CONFIG || {}).supabaseAnonKey;
+      const res = await fetch(`${url}?symbols=${syms.join(',')}&cdr=${cdrs.join(',')}`, {
+        cache: 'no-store',
+        headers: key ? { Authorization: `Bearer ${key}`, apikey: key } : {}
+      });
       const body = await res.json();
       Live.quotes = body.quotes || {};
       Live.cdr = body.cdr || {};

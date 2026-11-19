@@ -109,7 +109,7 @@
     state.price = q.price;
     state.priceSource = q.source;
     state.priceStatus = q.status;
-    setVal('price', q.price.toFixed(q.price < 1 ? 4 : 2));
+    setVal('price', fmtP(q.price));
   }
 
   // ---------- Exchange rate (free, no key) ----------
@@ -162,6 +162,8 @@
   // ---------- Helpers ----------
   const $ = (id) => document.getElementById(id);
   const r2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
+  // Price inputs always show at least two decimals (four below $1).
+  const fmtP = (v) => (v == null || !Number.isFinite(+v) ? '' : (+v).toFixed(Math.abs(+v) < 1 ? 4 : 2));
   const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
   const prefix = (ccy) => (ccy === 'CAD' ? 'CA$' : 'US$');
   const group = (x, min, max) => x.toLocaleString('en-CA', { minimumFractionDigits: min, maximumFractionDigits: max });
@@ -234,9 +236,10 @@
     fxMid: null,
     spreadPct: DEFAULTS.spreadPct,
     avgCost: null,
-    targetMode: 'price',
+    targetMode: 'auto', // 'auto' = follow the break-even price until the user sets a target
     targetPrice: null,
-    targetPct: 10,
+    targetPct: null,
+    convertBack: true,
     uprice: null
   };
 
@@ -251,14 +254,16 @@
     state.taxPct = DEFAULTS.taxByCurrency[sec.currency];
     state.avgCost = null;
     state.qtyAuto = true;
-    state.targetMode = 'price';
-    state.targetPrice = state.price ? r2(state.price * 1.1) : null;
+    state.targetMode = 'auto';
+    state.targetPrice = null;
+    state.targetPct = null;
     state.uprice = sec.cdr ? sec.cdr.underlyingLast : null;
 
-    setVal('price', state.price == null ? null : state.price.toFixed(state.price < 1 ? 4 : 2));
+    setVal('price', fmtP(state.price));
     setVal('taxpct', state.taxPct);
     setVal('avgcost', null);
-    setVal('tprice', state.targetPrice);
+    setVal('tprice', null);
+    setVal('tpct', null);
     setVal('uprice', state.uprice);
     render();
   }
@@ -309,21 +314,36 @@
       const bTotal = r2(bCost + fee);
       out.b = { qty: Q, cost: bCost, total: bTotal, totalCash: toCash(bTotal), diff: r2(cash - toCash(bTotal)) };
 
-      // Target price / projected gain
+      // Target price / projected gain.
+      // When the cash and trade currencies differ, the sale proceeds can be converted back to the
+      // cash currency at the reverse rate (mid ± spread), so break-even covers both fees and both conversions.
       if (Q > 0) {
-        const buyTotal = bTotal;
-        const be = Math.ceil(((buyTotal + fee) / Q) * 100 - 1e-6) / 100;
+        const back = convert && s.convertBack;
+        // back rate: cash-currency units received per trade-currency unit when converting the proceeds back
+        const backRate = !back ? 1 : (ccy === 'USD' ? mid * (1 - sp) : 1 / (mid * (1 + sp)));
+        const basis = back ? out.b.totalCash : bTotal;      // what you paid, in the currency you measure in
+        const bCcy = back ? cashCcy : ccy;
+        const dp = P < 1 ? 4 : 2, tick = 10 ** -dp, m = 10 ** dp;
+        const ceilP = (x) => Math.ceil(x * m - 1e-6) / m;
+        const up = (x) => Math.round((x + tick) * m) / m;
+        const priceFor = (want) => ceilP((want / backRate + fee) / Q); // lowest price whose proceeds reach `want`
+        const valueAt = (T) => { const net = r2(r2(Q * T) - fee); return back ? r2(net * backRate) : net; };
+        let be = priceFor(basis);
+        // Rounding can leave break-even a cent short; step up until proceeds cover the cost.
+        let g = 0; while (valueAt(be) < basis && g++ < 10) be = up(be);
         let T = s.targetPrice;
-        if (s.targetMode === 'pct' && s.targetPct != null) {
-          T = Math.ceil(((buyTotal * (1 + s.targetPct / 100) + fee) / Q) * 100 - 1e-6) / 100;
+        if (s.targetMode === 'auto') T = be;
+        else if (s.targetMode === 'pct' && s.targetPct != null) {
+          T = priceFor(basis * (1 + s.targetPct / 100));
+          g = 0; while (valueAt(T) < basis * (1 + s.targetPct / 100) - 1e-9 && g++ < 10) T = up(T);
         }
         if (T != null && T >= 0) {
-          const proceeds = r2(r2(Q * T) - fee);
-          const gain = r2(proceeds - buyTotal);
-          const pct = buyTotal > 0 ? (gain / buyTotal) * 100 : 0;
-          out.t = { T, be, buyTotal, proceeds, gain, pct, Q };
+          const proceeds = valueAt(T);
+          const gain = r2(proceeds - basis);
+          const pct = basis > 0 ? (gain / basis) * 100 : 0;
+          out.t = { T, be, buyTotal: basis, bCcy, back, backRate, proceeds, gain, pct, Q };
         } else {
-          out.t = { T: null, be, buyTotal, Q };
+          out.t = { T: null, be, buyTotal: basis, bCcy, back, backRate, Q };
         }
       }
     } else {
@@ -541,24 +561,35 @@
     tr.disabled = false;
     $('t-basis').textContent = `Based on buying ${units(t.Q)} units at ${price(state.price, ccy)}`;
     const P = state.price;
-    tr.min = (P * 0.5).toFixed(2);
-    tr.max = (Math.max(P * 2, (t.T || 0) * 1.1)).toFixed(2);
-    tr.step = P < 1 ? '0.001' : '0.01';
+    const tStep = P < 1 ? 0.001 : 0.01;
+    tr.min = (Math.floor(Math.min(P * 0.5, t.be * 0.5) / tStep) * tStep).toFixed(3);
+    tr.max = (Math.ceil(Math.max(P * 2, (t.T || 0) * 1.1, t.be * 1.5) / tStep) * tStep).toFixed(3);
+    tr.step = String(tStep);
     if (t.T != null) tr.value = String(t.T);
 
-    if (state.targetMode === 'pct') setVal('tprice', t.T);
-    else setVal('tpct', t.pct != null ? r2(t.pct) : null);
+    if (state.targetMode !== 'price') setVal('tprice', fmtP(t.T));
+    if (state.targetMode !== 'pct') setVal('tpct', t.pct != null ? r2(t.pct).toFixed(2) : null);
+    $('t-be').hidden = state.targetMode === 'auto';
 
+    const back = $('t-back');
+    back.hidden = !r.convert;
+    $('t-back-label').textContent = `Convert sale proceeds back to ${r.cashCcy}`;
+    $('convert-back').checked = state.convertBack;
+
+    const bc = t.bCcy;
     const items = [
-      ['Total buy cost', money(t.buyTotal, ccy)],
+      [t.back ? `Total buy cost (in ${bc})` : 'Total buy cost', money(t.buyTotal, bc)],
       ['Break-even price', price(t.be, ccy)]
     ];
     if (t.T != null) {
-      items.push([`Value at ${price(t.T, ccy)} after sell fee`, money(t.proceeds, ccy)]);
-      items.push(['Projected gain', signedMoney(t.gain, ccy)]);
+      items.push([t.back ? `Value at ${price(t.T, ccy)} after fee (in ${bc})` : `Value at ${price(t.T, ccy)} after sell fee`, money(t.proceeds, bc)]);
+      items.push(['Projected gain', signedMoney(t.gain, bc)]);
       items.push(['Return', signedPct(t.pct)]);
     }
     $('t-rows').innerHTML = rows(items);
+    const rateTxt = t.back ? ` Converting back uses 1 ${ccy} = ${group(t.backRate, 4, 4)} ${bc} (rate ${ccy === 'USD' ? '−' : '+'} spread).` : '';
+    const covers = !r.convert ? 'the buy fee and the same fee to sell' : t.back ? 'the buy fee, the same fee to sell, and the currency conversion both ways' : 'the buy fee, the same fee to sell, and the conversion to buy';
+    $('t-hint').textContent = `Starts at break-even, which covers ${covers}. Before income tax.${rateTxt}`;
   }
 
   function renderDetails(sec, ccy) {
@@ -663,7 +694,7 @@
   bindNum('price', 'price', () => { state.priceSource = 'Entered manually'; state.priceStatus = 'Manual'; });
   $('price-range').addEventListener('input', (e) => {
     state.price = num(e.target.value); state.priceSource = 'Adjusted with slider'; state.priceStatus = 'Manual';
-    $('price').value = e.target.value; render();
+    $('price').value = fmtP(state.price); render();
   });
   $('price-reset').addEventListener('click', () => { setSecurityPriceToLast(); });
   function setSecurityPriceToLast() {
@@ -671,7 +702,7 @@
     const q = PriceProvider.getQuote(state.sec);
     if (!q) return;
     state.price = q.price; state.priceSource = q.source; state.priceStatus = q.status;
-    $('price').value = String(q.price); render();
+    $('price').value = fmtP(q.price); render();
   }
 
   bindNum('cash', 'cash');
@@ -698,19 +729,23 @@
 
   $('tprice').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); render(); });
   $('tpct').addEventListener('input', (e) => { state.targetMode = 'pct'; state.targetPct = num(e.target.value); render(); });
-  $('tprice-range').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); $('tprice').value = e.target.value; render(); });
+  $('tprice-range').addEventListener('input', (e) => { state.targetMode = 'price'; state.targetPrice = num(e.target.value); $('tprice').value = fmtP(state.targetPrice); render(); });
+  $('t-be').addEventListener('click', () => { state.targetMode = 'auto'; state.targetPrice = null; state.targetPct = null; render(); });
+  $('convert-back').addEventListener('change', (e) => { state.convertBack = e.target.checked; render(); });
+  // Tidy typed prices to two decimals when the user leaves the box.
+  ['price', 'tprice'].forEach((id) => $(id).addEventListener('change', (e) => { const v = num(e.target.value); if (v != null) e.target.value = fmtP(v); }));
+  $('tpct').addEventListener('change', (e) => { const v = num(e.target.value); if (v != null) e.target.value = v.toFixed(2); });
 
   bindNum('uprice', 'uprice');
   $('use-est').addEventListener('click', (e) => {
     const est = num(e.currentTarget.dataset.est);
     if (est == null) return;
     state.price = est; state.priceSource = 'Estimated from the U.S. share price you entered'; state.priceStatus = 'Estimate (manual)';
-    $('price').value = String(est); render();
+    $('price').value = fmtP(est); render();
   });
 
   document.querySelectorAll('.side-btn').forEach((b) => b.addEventListener('click', () => {
     state.side = b.dataset.side;
-    if (state.side === 'buy' && state.targetMode === 'price' && state.targetPrice == null && state.price) state.targetPrice = r2(state.price * 1.1);
     render();
   }));
 
@@ -722,7 +757,7 @@
       sec: null, side: 'buy', price: null, refPrice: null, priceSource: '', priceStatus: '',
       cash: null, cashCcy: 'CAD', qty: null, qtyAuto: true, fractional: false, commission: DEFAULTS.commission,
       taxPct: DEFAULTS.taxByCurrency.CAD, spreadPct: DEFAULTS.spreadPct, avgCost: null,
-      targetMode: 'price', targetPrice: null, targetPct: 10, uprice: null
+      targetMode: 'auto', targetPrice: null, targetPct: null, convertBack: true, uprice: null
     });
     ['price', 'cash', 'qty', 'avgcost', 'tprice', 'tpct', 'uprice', 'sec-search'].forEach((id) => { $(id).value = ''; });
     $('commission').value = String(DEFAULTS.commission);

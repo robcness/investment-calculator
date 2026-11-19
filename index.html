@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%231f2a37%22/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=11">
+  <link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
   <a class="skip" href="#main" onclick="event.preventDefault();document.getElementById('main').focus();">Skip to calculator</a>
@@ -158,17 +158,18 @@
           </div>
           <div class="two">
             <div class="field">
-              <label for="tprice">Target price <span class="ccy" data-ccy></span></label>
+              <div class="field-head"><label for="tprice">Target price <span class="ccy" data-ccy></span></label><button type="button" class="link-btn" id="t-be" hidden data-testid="button-target-breakeven">Reset to break-even</button></div>
               <input id="tprice" class="num" type="number" inputmode="decimal" min="0" step="0.01" data-testid="input-target-price">
             </div>
             <div class="field">
               <label for="tpct">Target return %</label>
-              <input id="tpct" class="num" type="number" inputmode="decimal" step="0.1" data-testid="input-target-return">
+              <input id="tpct" class="num" type="number" inputmode="decimal" step="0.01" data-testid="input-target-return">
             </div>
           </div>
           <input id="tprice-range" type="range" aria-label="Adjust target price" data-testid="slider-target-price">
+          <label class="check" id="t-back" hidden><input type="checkbox" id="convert-back" checked data-testid="checkbox-convert-back"> <span id="t-back-label">Convert sale proceeds back</span></label>
           <dl class="rows wide" id="t-rows"></dl>
-          <p class="hint">Assumes the same fee to sell. Before income tax.</p>
+          <p class="hint" id="t-hint">Starts at break-even. Assumes the same fee to sell. Before income tax.</p>
         </section>
 
         <section class="panel" aria-labelledby="h-details">
@@ -220,8 +221,8 @@
     </div>
   </main>
 
-  <script src="config.js?v=11"></script>
-  <script src="securities.js?v=11"></script>
-  <script src="app.js?v=11"></script>
+  <script src="config.js?v=12"></script>
+  <script src="securities.js?v=12"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

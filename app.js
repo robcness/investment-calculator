@@ -5,13 +5,89 @@
   // Phase 1: returns the snapshot stored in securities.js.
   // Phase 2: replace getQuote with a call to a Supabase Edge Function that holds the
   // price-feed key server-side. The rest of the app only uses this interface.
+  // Live: U.S. quotes from Finnhub through the Supabase "quotes" function (key stays server-side).
+  // CDRs: estimated from the live U.S. price × CIBC's daily CDR ratio and FX forward.
+  // Everything else falls back to the starting price in securities.js.
+  const Live = { quotes: {}, cdr: {}, at: null, ok: false, error: null };
+  const fmtTime = (iso) => (iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '');
   const PriceProvider = {
-    name: 'snapshot',
     getQuote(sec) {
+      if (sec.currency === 'USD') {
+        const q = Live.quotes[sec.ticker];
+        if (q && q.price > 0) {
+          return { price: q.price, change: q.change, changePct: q.changePct, source: `Finnhub, ${fmtTime(q.time)}`, status: 'Live' };
+        }
+      }
+      if (sec.cdr && sec.cdr.ratio && sec.cdr.fxForward) {
+        const q = Live.quotes[sec.cdr.underlyingTicker];
+        if (q && q.price > 0) {
+          const k = sec.cdr.ratio * sec.cdr.fxForward;
+          const est = Math.round(q.price * k * 100) / 100;
+          const prev = q.prevClose > 0 ? q.prevClose * k : null;
+          return {
+            price: est,
+            change: prev != null ? Math.round((est - prev) * 100) / 100 : null,
+            changePct: q.changePct,
+            source: `Estimated from ${sec.cdr.underlyingTicker} US$${q.price.toFixed(2)} (Finnhub, ${fmtTime(q.time)})`,
+            status: 'Estimate'
+          };
+        }
+      }
       if (sec.last == null) return null;
       return { price: sec.last, change: sec.change, changePct: sec.changePct, source: window.SNAPSHOT_LABEL, status: 'Not live' };
     }
   };
+
+  async function loadQuotes() {
+    const url = (window.APP_CONFIG || {}).quotesUrl;
+    if (!url) return;
+    const list = window.SECURITIES;
+    const syms = [...new Set([
+      ...list.filter((s) => s.currency === 'USD').map((s) => s.ticker),
+      ...list.filter((s) => s.cdr).map((s) => s.cdr.underlyingTicker)
+    ])];
+    const cdrs = list.filter((s) => s.cdr).map((s) => s.ticker);
+    try {
+      const res = await fetch(`${url}?symbols=${syms.join(',')}&cdr=${cdrs.join(',')}`, { cache: 'no-store' });
+      const body = await res.json();
+      Live.quotes = body.quotes || {};
+      Live.cdr = body.cdr || {};
+      Live.at = body.fetchedAt ? new Date(body.fetchedAt) : new Date();
+      Live.ok = res.ok && !body.error;
+      Live.error = body.error || null;
+    } catch (e) {
+      Live.ok = false;
+      Live.error = 'Price service unavailable';
+    }
+    for (const s of list) {
+      if (!s.cdr) continue;
+      const c = Live.cdr[s.ticker];
+      if (c && c.ratio && c.fxForward) {
+        s.cdr.ratio = c.ratio;
+        s.cdr.fxForward = c.fxForward;
+        s.cdr.asOf = new Date(c.updated).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+      const uq = Live.quotes[s.cdr.underlyingTicker];
+      if (uq && uq.price > 0 && state.sec !== s) s.cdr.underlyingLast = uq.price;
+    }
+    refreshSelectedPrice();
+    render();
+    if (!$('sec-pop').hidden) openPop();
+  }
+
+  // Update the selected security's price unless the user has typed or chosen their own.
+  function refreshSelectedPrice() {
+    const sec = state.sec;
+    if (!sec) return;
+    const q = PriceProvider.getQuote(sec);
+    if (!q) return;
+    state.refPrice = q.price;
+    if (state.priceStatus === 'Manual' || state.priceStatus === 'Estimate (manual)') return;
+    state.price = q.price;
+    state.priceSource = q.source;
+    state.priceStatus = q.status;
+    setVal('price', q.price.toFixed(q.price < 1 ? 4 : 2));
+  }
 
   // ---------- Exchange rate (free, no key) ----------
   // Live: Coinbase public exchange-rate endpoint (updates about every minute).
@@ -87,6 +163,7 @@
     return `<span class="${cls}">${sign}${group(Math.abs(p), 2, 2)}%</span>`;
   }
   function changeHtml(sec) {
+    sec = sec || {};
     if (sec.change == null) return '<span class="flat">No change data</span>';
     if (sec.change === 0) return '<span class="flat">Unchanged</span>';
     const up = sec.change > 0;
@@ -125,6 +202,7 @@
     cash: null,
     cashCcy: 'CAD',
     qty: null,
+    qtyAuto: true,
     fractional: false,
     commission: DEFAULTS.commission,
     taxPct: 13,
@@ -147,6 +225,7 @@
     state.priceStatus = q ? q.status : '';
     state.taxPct = DEFAULTS.taxByCurrency[sec.currency];
     state.avgCost = null;
+    state.qtyAuto = true;
     state.targetMode = 'price';
     state.targetPrice = state.price ? r2(state.price * 1.1) : null;
     state.uprice = sec.cdr ? sec.cdr.underlyingLast : null;
@@ -252,7 +331,12 @@
     const s = state;
     const sec = s.sec;
     const isBuy = s.side === 'buy';
-    const r = compute();
+    let r = compute();
+    // Quantity follows the maximum until the user sets it themselves.
+    if (isBuy && s.qtyAuto && r.valid) {
+      const m = r.hasCash ? r.a.units : 0;
+      if (s.qty !== m) { s.qty = m; $('qty').value = String(m); r = compute(); }
+    }
     const ccy = r.ccy;
 
     // Selected security strip
@@ -262,9 +346,10 @@
       $('s-name').href = sec.website;
       $('s-name').hidden = false;
       $('s-meta').textContent = `${sec.type} · ${sec.exchange} · ${ccy}`;
-      $('s-last').textContent = sec.last != null ? price(sec.last, ccy) : '—';
-      $('s-chg').innerHTML = sec.last != null ? changeHtml(sec) : '';
-      $('s-source').innerHTML = sec.last != null ? '<span class="badge">Not live</span>' : esc(sec.note || '');
+      const lq = PriceProvider.getQuote(sec);
+      $('s-last').textContent = lq ? price(lq.price, ccy) : '—';
+      $('s-chg').innerHTML = lq ? changeHtml(lq) : '';
+      $('s-source').innerHTML = lq ? `<span class="badge${lq.status === 'Live' ? ' live' : ''}">${esc(lq.status)}</span>` : esc(sec.note || '');
     } else {
       $('s-symbol').textContent = 'No security selected';
       $('s-name').hidden = true;
@@ -333,6 +418,9 @@
 
     // Fees
     $('fee-total').textContent = money(r.fee, ccy);
+    $('tax-amt').textContent = money(r.tax, ccy);
+    $('qty-hint').textContent = isBuy && s.qtyAuto && r.valid ? 'Set to the most your cash can buy. Change it to explore other amounts.' : '';
+    $('qty-hint').hidden = !$('qty-hint').textContent;
     $('tax-hint').textContent = `Defaults: 13% HST on CAD trades, 0% on USD trades. Fee is charged in the security's currency (${ccy}).`;
 
     // Result cards
@@ -498,8 +586,8 @@
       <li class="opt-row" role="option" id="opt-${i}" aria-selected="${i === active}" data-i="${i}" data-testid="option-security-${esc(s.symbol)}">
         <span class="opt-sym">${esc(s.symbol)}</span><span class="opt-sep">|</span>
         <span class="opt-name">${esc(s.name)}</span><span class="opt-sep">|</span>
-        <span class="opt-price">${s.last != null ? group(s.last, 2, 4) + ' ' + s.currency : 'No price'}</span>
-        <span class="opt-chg">${s.last != null ? changeHtml(s) : ''}</span>
+        ${(() => { const q = PriceProvider.getQuote(s); return `<span class="opt-price">${q ? group(q.price, 2, 4) + ' ' + s.currency : 'No price'}</span>
+        <span class="opt-chg">${q ? changeHtml(q) : ''}</span>`; })()}
       </li>`).join('');
     $('pop-heading').textContent = search.value.trim() ? `Matches (${matches.length})` : `Your securities (${matches.length})`;
     $('pop-empty').hidden = matches.length > 0;
@@ -561,11 +649,13 @@
   }
 
   bindNum('cash', 'cash');
-  bindNum('qty', 'qty');
-  $('qty-range').addEventListener('input', (e) => { state.qty = num(e.target.value); $('qty').value = e.target.value; render(); });
+  bindNum('qty', 'qty', () => { state.qtyAuto = false; });
+  $('qty-range').addEventListener('input', (e) => { state.qtyAuto = false; state.qty = num(e.target.value); $('qty').value = e.target.value; render(); });
   $('qty-max').addEventListener('click', () => {
     const r = compute();
-    if (r.a && r.hasCash) { state.qty = r.a.units; $('qty').value = String(r.a.units); render(); }
+    state.qtyAuto = true;
+    if (r.a && r.hasCash) { state.qty = r.a.units; $('qty').value = String(r.a.units); }
+    render();
   });
   $('fractional').addEventListener('change', (e) => {
     state.fractional = e.target.checked;
@@ -588,7 +678,7 @@
   $('use-est').addEventListener('click', (e) => {
     const est = num(e.currentTarget.dataset.est);
     if (est == null) return;
-    state.price = est; state.priceSource = 'Estimated from the U.S. share price'; state.priceStatus = 'Estimate';
+    state.price = est; state.priceSource = 'Estimated from the U.S. share price you entered'; state.priceStatus = 'Estimate (manual)';
     $('price').value = String(est); render();
   });
 
@@ -604,7 +694,7 @@
   $('reset').addEventListener('click', () => {
     Object.assign(state, {
       sec: null, side: 'buy', price: null, refPrice: null, priceSource: '', priceStatus: '',
-      cash: null, cashCcy: 'CAD', qty: null, fractional: false, commission: DEFAULTS.commission,
+      cash: null, cashCcy: 'CAD', qty: null, qtyAuto: true, fractional: false, commission: DEFAULTS.commission,
       taxPct: DEFAULTS.taxByCurrency.CAD, spreadPct: DEFAULTS.spreadPct, avgCost: null,
       targetMode: 'price', targetPrice: null, targetPct: 10, uprice: null
     });
@@ -627,4 +717,6 @@
   render();
   loadFx();
   setInterval(() => { loadFx(); }, 60000);
+  loadQuotes();
+  setInterval(() => { loadQuotes(); }, 30000);
 })();

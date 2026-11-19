@@ -215,3 +215,13 @@ input[type="range"] { width: 100%; accent-color: var(--color-ink); min-height: 2
 .rows dd.neg { padding-right: var(--space-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .rows dt.neg, .rows dd.neg { align-self: stretch; display: flex; align-items: center; }
 .rows dd.neg { justify-content: flex-end; }
+
+.tax-label { display: flex; align-items: center; gap: var(--space-1); flex-wrap: nowrap; white-space: nowrap; min-height: 22px; }
+input.num.inline { width: 3.6em; min-height: 36px; padding: var(--space-1) var(--space-2); margin-block: calc(-1 * var(--space-2)); }
+.fee-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr); }
+@media (max-width: 640px) { .fee-grid { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 961px) and (max-width: 1140px) {
+  .fee-grid { grid-template-columns: 1fr 1fr; }
+  .fee-grid .field:last-child { grid-column: 1 / -1; }
+}
+.badge.live { background: var(--color-gain-bg); color: var(--color-gain); }

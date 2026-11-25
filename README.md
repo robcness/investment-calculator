@@ -1,5 +1,7 @@
 # Investment Calculator
 
+**[Open the calculator](https://robcness.github.io/investment-calculator/)**
+
 A browser-based stock trading calculator for personal use. It works out how many units you can buy or what a sale returns, including the broker fee, tax on the fee and currency conversion, for U.S. and Canadian securities.
 
 Personal tool only. Not financial advice.
